@@ -4,6 +4,7 @@ const { getProfile, saveProfile, getLeaderboard, checkNameExistance, getDailyQue
   getDailyQuestByType, getAchieveQuestByType, saveName, getName, login } = require('../controllers/profileController');
 const { getSpecificDBLeaderboard } = require('../controllers/newDBController');
 const verifyUser = require('../routes/middleware/verifyUser');
+const rateLimiter = require('../routes/middleware/rateLimiter');
 
 const iapController = require('../controllers/iap.controller');
 const trashTalkController = require('../controllers/trashTalkController');
@@ -21,25 +22,54 @@ const {
 // Raw binary body parser — applied only to the binary save route
 const rawBinaryParser = express.raw({ type: 'application/octet-stream', limit: '5mb' });
 
+// Rate limiters tuned per endpoint cost
+const saveBinaryLimiter   = rateLimiter({ windowMs: 60_000, max: 10,  message: 'Save rate limit exceeded — max 10 saves/min' });
+const loadBinaryLimiter   = rateLimiter({ windowMs: 60_000, max: 30,  message: 'Load rate limit exceeded — max 30 loads/min' });
+const metadataLimiter     = rateLimiter({ windowMs: 60_000, max: 60,  message: 'Metadata rate limit exceeded' });
+const verifyLimiter       = rateLimiter({ windowMs: 60_000, max: 20,  message: 'Verify rate limit exceeded — max 20 verifications/min' });
+const leaderboardLimiter  = rateLimiter({ windowMs: 60_000, max: 30,  message: 'Leaderboard rate limit exceeded' });
 
-// ── 0G Storage — binary save / load (Unity native path) ─────────────────────
-// POST body: raw msgpack binary (Content-Type: application/octet-stream)
-// Header:    X-Wallet-Address: 0x...
-// Header:    X-Save-Index: <int>  (optional, for rollback protection)
-router.post('/save/binary', rawBinaryParser, saveBinary);
 
-// GET response: raw msgpack binary (Content-Type: application/octet-stream)
-// Header:    X-Root-Hash, X-Save-Index, X-Da-Status
-router.get('/load/binary', loadBinary);
+// ── 0G Storage — binary save / load ──────────────────────────────────────────
+//
+// POST /save/binary
+//   Body:    raw msgpack binary (Content-Type: application/octet-stream)
+//   Headers: Authorization: Bearer <jwt>, X-Save-Index (optional)
+//
+// Wallet comes from the JWT — issued at login, passed through the React Native
+// iframe session. No wallet popup or signing prompt required in-game.
+router.post('/save/binary',
+  saveBinaryLimiter,
+  verifyUser,
+  rawBinaryParser,
+  saveBinary,
+);
 
-// Metadata: rootHash, saveIndex, DA commitment, compute verdict
-router.get('/save/metadata', getSaveMetadata);
+// GET /load/binary
+//   Response: raw msgpack binary
+//   Headers:  X-Root-Hash, X-Save-Index, X-Da-Status, X-Checksum-Sha256
+//
+// JWT wallet is used as the lookup key — player always loads their own save.
+router.get('/load/binary',
+  loadBinaryLimiter,
+  verifyUser,
+  loadBinary,
+);
 
-// 4-layer integrity check: DB record + DA proof + file checksum + compute
-router.get('/verify', verifySave);
+// GET /save/metadata?wallet=0x...
+//   Public metadata (rootHash, saveIndex, DA status, compute verdict).
+//   No auth — metadata is not sensitive game data.
+router.get('/save/metadata', metadataLimiter, getSaveMetadata);
 
-// Leaderboard backed by 0G DA — scores have BLS signatures from DA nodes
-router.get('/leaderboard/decentralized', getDecentralizedLeaderboard);
+// GET /verify?wallet=0x...
+//   4-layer integrity check: DB record + DA proof + file checksum + compute.
+//   Public — anyone can verify the integrity of a save.
+router.get('/verify', verifyLimiter, verifySave);
+
+// GET /leaderboard/decentralized
+//   Backed by coinSnapshot stored in MongoDB, sourced from 0G DA.
+//   Public — leaderboards are always public.
+router.get('/leaderboard/decentralized', leaderboardLimiter, getDecentralizedLeaderboard);
 
 // ── Legacy JSON API (unchanged — backward compat for existing Unity builds) ──
 router.get('/', getProfile);

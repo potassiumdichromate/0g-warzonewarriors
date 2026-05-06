@@ -1,225 +1,218 @@
 # Warzone Warriors — API Reference
 
-> Base URL: `https://api.warzonewarriors.xyz/warzone`  
-> All requests from Unity use `Content-Type: application/json` unless noted.  
-> JWT token from `/login` required where marked **[AUTH]**.
+Base URL: `https://your-backend.com/warzone`
+
+All authenticated endpoints require:
+```
+Authorization: Bearer <jwt>
+```
+
+JWT is issued by `POST /warzone/login`. The wallet address decoded from the JWT is the authoritative identity — it cannot be overridden by headers.
 
 ---
 
 ## Authentication
 
 ### POST /login
-Login or register a player by wallet address. Returns JWT.
+Issue a JWT for a wallet address.
 
-**Request:**
+**Request**
 ```json
-{
-  "walletAddress": "0xabc123...",
-  "walletProviderType": "metamask"
-}
+{ "walletAddress": "0x1234..." }
 ```
-**Response `200`:**
+
+**Response 200**
 ```json
 {
   "success": true,
-  "token": "eyJhbGc...",
-  "user": {
-    "walletAddress": "0xabc123...",
-    "isNewUser": false
+  "token": "eyJ...",
+  "walletAddress": "0x1234..."
+}
+```
+
+---
+
+## 0G Decentralized Endpoints
+
+### POST /save/binary
+Upload a binary player save to 0G Storage.
+
+**Auth:** JWT required  
+**Rate limit:** 10/min  
+**Content-Type:** `application/octet-stream`
+
+**Headers**
+```
+Authorization: Bearer <jwt>
+Content-Type:  application/octet-stream
+X-Save-Index:  <integer>   (optional — anti-rollback hint)
+```
+
+**Body:** raw msgpack binary (serialized player state)
+
+**Response 201**
+```json
+{
+  "ok": true,
+  "rootHash": "0xabc123...",
+  "saveIndex": 5,
+  "txHash": "0xdef456...",
+  "size": 2048,
+  "checksum": "sha256hex...",
+  "pipeline": {
+    "anchor": "queued",
+    "da": "queued",
+    "compute": "queued"
   }
 }
 ```
 
----
-
-## Player Profile (Legacy JSON — existing Unity builds)
-
-### GET /
-Get player profile by wallet address.
-
-**Query:** `?walletAddress=0xabc123...`
-
-**Response `200`:** Full PlayerProfile JSON (same shape as Mongoose document).
-
----
-
-### POST /
-Save player profile (full JSON body). Also triggers 0G Storage dual-write in background.
-
-**Request:**
-```json
-{
-  "walletAddress": "0xabc123...",
-  "PlayerProfile": { "level": 5, "exp": 1200 },
-  "PlayerResources": { "coin": 4500, "gem": 20, "stamina": 0, "medal": 0 },
-  "PlayerGuns": { "0": { "id": 0, "level": 1, "ammo": 0, "isNew": false } },
-  "PlayerRambos": { "0": { "id": 0, "level": 2 } },
-  "PlayerBoosters": { "Hp": 1, "Damage": 0 }
-}
-```
-**Response `200`:** Saved profile JSON.
-
----
-
-## 0G Storage — Binary Save / Load (New Unity path)
-
-### POST /save/binary  `[AUTH optional]`
-Upload a binary (msgpack) player save to 0G Storage.  
-Anchor rootHash on 0G chain + DA commitment run in background.
-
-**Headers:**
-```
-Content-Type: application/octet-stream
-X-Wallet-Address: 0xabc123...
-X-Save-Index: 42           (optional — backend infers if omitted)
-```
-**Body:** Raw msgpack binary (Unity serialises with MessagePack-CSharp)
-
-**Response `201`:**
-```json
-{
-  "ok": true,
-  "rootHash": "0x3a9f1c2d...",
-  "txHash": "0xb7e2a4c1...",
-  "saveIndex": 42,
-  "size": 1842,
-  "daStatus": "pending",
-  "message": "Save uploaded to 0G Storage. DA commitment running in background."
-}
-```
-
-**Error `409` (rollback rejected):**
+**Response 409** — rollback rejected
 ```json
 {
   "ok": false,
   "message": "Save index rollback detected — rejected",
-  "currentSaveIndex": 42,
-  "receivedSaveIndex": 10
+  "currentSaveIndex": 7,
+  "receivedSaveIndex": 3
 }
 ```
+
+**Notes:**
+- The HTTP response returns as soon as 0G Storage upload completes (~1–3s).
+- Chain anchoring, DA commitment, and Compute anti-cheat run in the background.
+- Poll `GET /save/metadata` to check pipeline status.
 
 ---
 
 ### GET /load/binary
-Download the latest binary save for a wallet from 0G Storage.  
-Merkle-proof verified on download — tampered data throws before returning.
+Download the latest binary save from 0G Storage.
 
-**Query:** `?wallet=0xabc123...`
+**Auth:** JWT required (loads the authenticated player's own save only)  
+**Rate limit:** 30/min
 
-**Response `200`:**
+**Response 200**
 ```
 Content-Type: application/octet-stream
-X-Root-Hash: 0x3a9f1c2d...
-X-Save-Index: 42
+X-Root-Hash: 0xabc123...
+X-Save-Index: 5
 X-Da-Status: finalized
-X-Checksum-Sha256: f3a1b2...
-
-<raw msgpack binary body>
+X-Checksum-Sha256: sha256hex...
 ```
+Body: raw msgpack binary
 
-**Error `404`:**
+**Response 404**
 ```json
-{ "ok": false, "message": "No save found for this wallet on 0G Storage" }
+{ "ok": false, "message": "No save found for this wallet" }
 ```
 
 ---
 
 ### GET /save/metadata
-Get metadata for a wallet's latest save — rootHash, on-chain anchor, DA commitment.  
-Unity can show players their own on-chain proof link.
+Fetch metadata for a wallet's latest save. No auth required.
 
-**Query:** `?wallet=0xabc123...`
+**Rate limit:** 60/min
 
-**Response `200`:**
+**Query params**
+```
+wallet=0x1234...   (required)
+```
+
+**Response 200**
 ```json
 {
   "ok": true,
-  "hasSave": true,
-  "walletAddress": "0xabc123...",
-  "rootHash": "0x3a9f1c2d...",
-  "storageTxHash": "0xb7e2a4c1...",
-  "saveIndex": 42,
-  "fileSize": 1842,
-  "coinSnapshot": 4500,
-  "onChainAnchor": {
-    "rootHash": "0x3a9f1c2d...",
-    "saveIndex": 42,
-    "timestamp": 1746532800
-  },
+  "wallet": "0x1234...",
+  "rootHash": "0xabc123...",
+  "saveIndex": 5,
+  "fileSize": 2048,
+  "checksum": "sha256hex...",
   "daStatus": "finalized",
   "daCommitment": {
-    "requestId": "a3b4c5...",
-    "batchId": 1021,
+    "requestId": "...",
+    "batchId": 42,
     "blobIndex": 3,
-    "batchHeaderHash": "d9e1f2...",
-    "referenceBlockNumber": 998021,
-    "finalizedAt": "2026-05-06T10:00:00.000Z"
+    "batchHeaderHash": "0x...",
+    "referenceBlockNumber": 1234567,
+    "finalizedAt": "2025-01-01T12:00:00.000Z"
   },
   "computeStatus": "validated",
-  "computeVerdict": "CLEAN",
-  "savedAt": "2026-05-06T09:58:00.000Z"
+  "computeValidation": {
+    "valid": true,
+    "confidence": 0.95,
+    "verdict": "CLEAN",
+    "flags": [],
+    "teeVerified": false
+  },
+  "anchorTxHash": "0xdef...",
+  "anchorBlock": 987654,
+  "onChain": {
+    "rootHash": "0xabc123...",
+    "saveIndex": 5,
+    "timestamp": 1700000000,
+    "explorerUrl": "https://chainscan.0g.ai/tx/0xdef..."
+  },
+  "savedAt": "2025-01-01T12:00:00.000Z"
 }
 ```
 
 ---
 
 ### GET /verify
-4-layer integrity check for a specific rootHash.  
-Use this to prove to auditors / players that a save is legitimate.
+Run a 4-layer integrity check on a wallet's save. Public endpoint.
 
-**Query:** `?wallet=0xabc123...&rootHash=0x3a9f1c2d...`
+**Rate limit:** 20/min
 
-**Response `200` — all clean:**
+**Query params**
+```
+wallet=0x1234...   (required)
+```
+
+**Response 200**
 ```json
 {
   "ok": true,
-  "verdict": "CLEAN",
-  "checks": {
-    "dbRecord": true,
-    "daFinalized": true,
-    "daProofValid": true,
-    "checksumValid": true,
-    "computeValid": true
+  "wallet": "0x1234...",
+  "rootHash": "0xabc123...",
+  "saveIndex": 5,
+  "layers": {
+    "db": {
+      "passed": true,
+      "detail": "Record found, rootHash and saveIndex consistent"
+    },
+    "da": {
+      "passed": true,
+      "detail": "DA status: finalized — BLS-signed by 0G DA committee"
+    },
+    "checksum": {
+      "passed": true,
+      "detail": "File re-downloaded from 0G Storage, SHA-256 matches"
+    },
+    "compute": {
+      "passed": true,
+      "detail": "Compute verdict: CLEAN (confidence: 0.95)"
+    }
   },
-  "daStatus": "finalized",
-  "computeVerdict": "CLEAN",
-  "rootHash": "0x3a9f1c2d...",
-  "saveIndex": 42,
-  "savedAt": "2026-05-06T09:58:00.000Z"
+  "allPassed": true,
+  "verifiedAt": "2025-01-01T12:00:00.000Z"
 }
 ```
 
-**Response `200` — tampered:**
-```json
-{
-  "ok": true,
-  "verdict": "TAMPERED",
-  "checks": {
-    "dbRecord": true,
-    "daFinalized": true,
-    "daProofValid": true,
-    "checksumValid": false,
-    "computeValid": true
-  }
-}
-```
-
----
-
-## Leaderboards
-
-### GET /leaderboard
-Legacy leaderboard from MongoDB — top 100 by coins.
-
-**Response `200`:** Array of player objects with `name`, `PlayerResources.coin`, etc.
+**What each layer means:**
+| Layer | Passes when |
+|---|---|
+| `db` | A `PlayerSaveRecord` exists in MongoDB with matching rootHash |
+| `da` | `daStatus === finalized` — 0G DA nodes signed the commitment |
+| `checksum` | File re-downloaded from 0G Storage and SHA-256 matches stored checksum |
+| `compute` | Compute verdict is `CLEAN` or `validated` with no rejected flags |
 
 ---
 
 ### GET /leaderboard/decentralized
-Leaderboard derived from 0G Storage saves (`PlayerSaveRecord.coinSnapshot`).  
-Each entry shows its DA status — `verified: true` means the score has a BLS proof.
+Top-100 players ranked by coin balance, sourced from 0G DA-backed snapshots.
 
-**Response `200`:**
+**Rate limit:** 30/min
+
+**Response 200**
 ```json
 {
   "ok": true,
@@ -228,187 +221,127 @@ Each entry shows its DA status — `verified: true` means the score has a BLS pr
   "entries": [
     {
       "rank": 1,
-      "walletAddress": "0xabc123...",
-      "name": "SnipeKing42",
-      "coin": 98500,
-      "rootHash": "0x3a9f1c2d...",
+      "walletAddress": "0x1234...",
+      "name": "DragonSlayer",
+      "coin": 95000,
+      "rootHash": "0xabc...",
       "daStatus": "finalized",
-      "saveIndex": 187,
-      "savedAt": "2026-05-06T09:58:00.000Z",
+      "saveIndex": 12,
+      "savedAt": "2025-01-01T12:00:00.000Z",
       "verified": true
     }
   ]
 }
 ```
 
-> `verified: true` = score was BLS-signed by >2/3 of 0G DA nodes.
+**`verified: true`** means `daStatus === "finalized"` — the coin balance was committed to 0G DA and BLS-signed by the DA committee. It is not just a database value.
+
+**Name fallback:** If a player has no registered name, their display name is `Warrior_<first 6 chars of wallet>` (deterministic — same on every request).
 
 ---
 
-## Daily Quests & Achievements
+## Legacy JSON Endpoints (unchanged)
+
+These endpoints are fully backward-compatible with existing Unity builds.
+
+### GET /
+Fetch player profile by wallet.
+
+**Query:** `?walletAddress=0x...`
+
+### POST /
+Save player profile (JSON).
+
+**Body:** `{ "walletAddress": "0x...", ...profileFields }`
+
+This endpoint also triggers a background 0G Storage upload via dual-write — existing builds get 0G coverage automatically with no code changes.
+
+### POST /login
+Issue JWT. See Authentication section above.
+
+### GET /leaderboard
+Legacy leaderboard (MongoDB-backed).
 
 ### GET /dailyQuests
-**Query:** `?walletAddress=0x...`  
-**Response:** `{ PlayerDailyQuestData: [...] }`
+Daily quest list.
 
-### GET /dailyQuests/type/:type
-**Query:** `?walletAddress=0x...`  
-**Response:** `{ completed, score, isClaimed, reward }`
+### POST /iap/purchase
+**Auth:** JWT required  
+In-app purchase via Somnia IAP contract.
 
-### GET /achieveQuests/type/:type
-**Query:** `?walletAddress=0x...`  
-**Response:** `{ completed, score, isClaimed, reward }`
-
----
-
-## Player Names
-
-### POST /name
-Check if a display name is available.
-```json
-{ "name": "SnipeKing42" }
-```
-**Response:** `{ "success": true, "message": "Name is available" }`
-
-### POST /saveName  `[AUTH]`
-Save a display name for the authenticated wallet.
-```json
-{ "name": "SnipeKing42", "walletAddress": "0x..." }
-```
-
-### GET /name  `[AUTH]`
-Get the display name for the authenticated wallet.  
-**Response:** `{ "name": "SnipeKing42", "isDefault": false }`
-
----
-
-## In-App Purchases (Somnia chain — unchanged)
-
-### POST /iap/purchase  `[AUTH]`
-Submit an IAP transaction for verification and delivery.
-
-**Request:**
-```json
-{
-  "category": "Coins",
-  "product": "1000",
-  "orderId": "ord_abc123",
-  "txHash": "0xabcdef..."
-}
-```
-**Categories:** `Coins` | `Gems` | `Guns`  
-**Coin products:** `100` | `500` | `1000` | `2000`  
-**Gem products:** `100` | `300` | `500` | `1000`  
-**Gun products:** `Shotgun` | `AWP` | `Tesla` | `Laser` | `Fireball` | `FlameThrower` | etc.
-
-**Response `202`:**
-```json
-{
-  "ok": true,
-  "message": "Purchase accepted for background verification",
-  "data": {
-    "walletAddress": "0x...",
-    "PlayerResources": { "coin": 5500, "gem": 20 },
-    "purchase": { "status": "pending_verification", "orderId": "ord_abc123" }
-  }
-}
-```
-
-### GET /iap/purchase-status  `[AUTH]`
-**Query:** `?orderId=ord_abc123` or `?txHash=0xabcdef...`  
-**Response:** Same shape as purchase response with updated `status`.
+### GET /iap/purchase-status
+**Auth:** JWT required  
+Check purchase transaction status.
 
 ### GET /iap/pricing
-Returns all pack prices.
-```json
-{
-  "ok": true,
-  "data": {
-    "coins": [
-      { "product": "100",  "amount": 100,  "priceEth": "0.5" },
-      { "product": "500",  "amount": 500,  "priceEth": "2"   },
-      { "product": "1000", "amount": 1000, "priceEth": "4"   },
-      { "product": "2000", "amount": 2000, "priceEth": "7.5" }
-    ],
-    "gems": [
-      { "product": "100",  "amount": 100,  "priceEth": "0.5" },
-      { "product": "300",  "amount": 300,  "priceEth": "1.5" },
-      { "product": "500",  "amount": 500,  "priceEth": "2.5" },
-      { "product": "1000", "amount": 1000, "priceEth": "5"   }
-    ]
-  }
-}
-```
-
----
-
-## Trash Talk
-
-### GET /trash-talk/line
-Returns a pre-generated trash talk line (instant, no AI wait).
-```json
-{ "line": "Your aim is so bad you couldn't hit the floor if you fell.", "type": "loser" }
-```
-
-### POST /trash-talk/generate
-Triggers background generation of new lines.
-
----
-
-## Health
-
-### GET /health
-```json
-{ "status": "OK", "timestamp": "2026-05-06T10:00:00.000Z" }
-```
-
----
-
-## Unity Integration Guide
-
-### Binary Save (C# — MessagePack-CSharp)
-
-```csharp
-// Serialise
-byte[] binary = MessagePackSerializer.Serialize(playerData);
-
-UnityWebRequest req = new UnityWebRequest(baseUrl + "/warzone/save/binary", "POST");
-req.uploadHandler   = new UploadHandlerRaw(binary);
-req.downloadHandler = new DownloadHandlerBuffer();
-req.SetRequestHeader("Content-Type", "application/octet-stream");
-req.SetRequestHeader("X-Wallet-Address", walletAddress);
-req.SetRequestHeader("X-Save-Index", saveIndex.ToString());
-yield return req.SendWebRequest();
-
-// Parse response
-var res = JsonUtility.FromJson<SaveResponse>(req.downloadHandler.text);
-Debug.Log("Saved to 0G: " + res.rootHash);
-```
-
-### Binary Load (C# — MessagePack-CSharp)
-
-```csharp
-UnityWebRequest req = UnityWebRequest.Get(baseUrl + "/warzone/load/binary?wallet=" + walletAddress);
-yield return req.SendWebRequest();
-
-byte[] binary = req.downloadHandler.data;
-PlayerData data = MessagePackSerializer.Deserialize<PlayerData>(binary);
-string rootHash  = req.GetResponseHeader("X-Root-Hash");
-string daStatus  = req.GetResponseHeader("X-Da-Status");
-Debug.Log("Loaded from 0G: " + rootHash + " DA: " + daStatus);
-```
+Coin and gem pack prices.
 
 ---
 
 ## Error Codes
 
-| HTTP | Meaning |
+| Status | Meaning |
 |---|---|
-| `400` | Bad request — missing or invalid parameter |
-| `401` | Unauthorized — JWT missing or expired |
-| `403` | Forbidden — wallet mismatch |
-| `404` | Not found — no save / player / purchase |
-| `409` | Conflict — rollback detected / duplicate order |
-| `413` | Payload too large — save file > 5MB |
-| `500` | Internal server error |
-| `503` | 0G features disabled (`ZG_ENABLED=false`) |
+| 400 | Bad request — missing or invalid parameters |
+| 401 | Unauthorized — missing or invalid JWT |
+| 403 | Forbidden — authenticated but not allowed (e.g., loading another player's save) |
+| 404 | Not found — no save record for this wallet |
+| 409 | Conflict — save index rollback rejected |
+| 413 | Payload too large — binary save exceeds 5MB |
+| 429 | Rate limit exceeded — see `Retry-After` header |
+| 500 | Internal server error |
+| 503 | 0G stack disabled (`ZG_ENABLED=false`) |
+
+---
+
+## Unity / React Native Integration
+
+### Binary Save (msgpack)
+
+```csharp
+// Serialize player state to msgpack
+byte[] saveBytes = MessagePackSerializer.Serialize(playerState);
+
+// Send to backend
+var request = new UnityWebRequest(baseUrl + "/save/binary", "POST");
+request.uploadHandler = new UploadHandlerRaw(saveBytes);
+request.downloadHandler = new DownloadHandlerBuffer();
+request.SetRequestHeader("Content-Type", "application/octet-stream");
+request.SetRequestHeader("Authorization", "Bearer " + jwt);
+request.SetRequestHeader("X-Save-Index", saveIndex.ToString());
+
+yield return request.SendWebRequest();
+
+var json = JSON.Parse(request.downloadHandler.text);
+string rootHash = json["rootHash"];
+int newSaveIndex = json["saveIndex"].AsInt;
+```
+
+### Binary Load (msgpack)
+
+```csharp
+var request = UnityWebRequest.Get(baseUrl + "/load/binary");
+request.SetRequestHeader("Authorization", "Bearer " + jwt);
+request.downloadHandler = new DownloadHandlerBuffer();
+
+yield return request.SendWebRequest();
+
+string rootHash = request.GetResponseHeader("X-Root-Hash");
+byte[] rawBytes = request.downloadHandler.data;
+
+PlayerState state = MessagePackSerializer.Deserialize<PlayerState>(rawBytes);
+```
+
+### React Native (iframe session)
+The JWT is issued at login and passed into the game iframe via `postMessage`. The game includes it in every `Authorization: Bearer <token>` header. No wallet popup or signing prompt is required during gameplay.
+
+---
+
+## DA Finality Times
+
+| Network | Typical finality |
+|---|---|
+| 0G DA testnet | 60–120 seconds |
+| 0G DA mainnet | TBD (check 0G docs) |
+
+The backend polls every 5 seconds up to `ZG_DA_POLL_TIMEOUT_MS` (default: 120,000ms). The HTTP save response is never blocked by DA — it completes in ~1–3 seconds. Use `GET /save/metadata` to poll `daStatus` after saving.

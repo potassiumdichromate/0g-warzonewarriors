@@ -37,8 +37,11 @@ function getPrivateKey() {
 // Recompile with: npx hardhat compile  OR  solc --bin contracts/PlayerSaveAnchor.sol
 // Replace the bytecode below after recompiling if the contract changes.
 const ANCHOR_ABI = [
+  'constructor(address backendOperator)',
   'function anchorSave(address wallet, string calldata rootHash, uint64 saveIndex) external',
   'function getLatestSave(address wallet) external view returns (string rootHash, uint64 saveIndex, uint64 timestamp)',
+  'function hasSave(address wallet) external view returns (bool)',
+  'function backendOperator() external view returns (address)',
   'event SaveAnchored(address indexed wallet, string rootHash, uint64 saveIndex, uint64 timestamp)',
 ];
 
@@ -88,8 +91,13 @@ async function main() {
     process.exit(1);
   }
 
+  // The backend operator address (ZG_PRIVATE_KEY wallet) is baked in at deploy time.
+  // Only this address + each player's own wallet can call anchorSave.
+  const backendOperator = signer.address;
+  console.log('  Backend operator:', backendOperator);
+
   const factory  = new ethers.ContractFactory(ANCHOR_ABI, ANCHOR_BYTECODE, signer);
-  const contract = await factory.deploy();
+  const contract = await factory.deploy(backendOperator);
   console.log('  Tx hash:', contract.deploymentTransaction().hash);
 
   await contract.waitForDeployment();

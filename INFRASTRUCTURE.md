@@ -1,409 +1,316 @@
-# Warzone Warriors — 0G Infrastructure Architecture
+# Warzone Warriors — Decentralized Infrastructure
 
-> **Partner:** 0G (Zero Gravity) — Storage · DA · Compute · EVM chain  
-> **Game engine:** Unity  
-> **Legacy chain:** Somnia (IAP + game registration — unchanged)  
-> **New layer:** 0G full stack — every player save is decentralised
-
----
-
-## 1. System Overview
+## System Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         UNITY CLIENT                                │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │  Serialise player state → msgpack binary → POST /save/binary│   │
-│  │  GET /load/binary → deserialise msgpack → apply game state  │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-└─────────────────────────┬───────────────────────────────────────────┘
-                          │  HTTPS
-                          ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    WARZONE BACKEND (Node.js)                        │
-│                                                                     │
-│   Verify signature → upload binary → anchor hash → DA commit       │
-│   Anti-cheat via Compute → store metadata in MongoDB index          │
-└──┬──────────────┬──────────────┬──────────────┬────────────────────┘
-   │              │              │              │
-   ▼              ▼              ▼              ▼
-┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────────┐
-│0G Storage│ │ 0G Chain │ │  0G DA   │ │    0G Compute         │
-│          │ │ (16600)  │ │(testnet) │ │  (router-api.0g.ai)  │
-│ Binary   │ │          │ │          │ │                       │
-│ save     │ │ Player   │ │ Leader-  │ │ TEE anti-cheat:       │
-│ files    │ │ Save     │ │ board +  │ │ validates coin delta, │
-│ (msgpack)│ │ Anchor   │ │ save     │ │ rollback attempts,    │
-│          │ │ contract │ │ commit-  │ │ impossible stats      │
-│ Content- │ │          │ │ ments    │ │                       │
-│ addressed│ │ rootHash │ │ BLS-     │ │ Result is TEE-signed  │
-│ by Merkle│ │ per      │ │ signed   │ │ → cannot be forged    │
-│ rootHash │ │ wallet   │ │ by nodes │ │ by us or anyone       │
-└──────────┘ └──────────┘ └──────────┘ └──────────────────────┘
-
-┌──────────────────────────────────────────────────────────────────────┐
-│                    SOMNIA CHAIN (5031) — unchanged                   │
-│  IAP contract (coin/gem/gun purchases) · Game registration contract  │
-│  registerUser · startGameFor · endGameFor · isRegistered             │
-└──────────────────────────────────────────────────────────────────────┘
+Unity / React Native Game
+        │
+        │  HTTPS  (JWT in Authorization header)
+        ▼
+┌─────────────────────────────────────────────────────┐
+│              Node.js / Express Backend               │
+│                                                     │
+│   POST /warzone/save/binary   ←── binary save       │
+│   GET  /warzone/load/binary   ←── binary load       │
+│   GET  /warzone/save/metadata                       │
+│   GET  /warzone/verify                              │
+│   GET  /warzone/leaderboard/decentralized           │
+└──────┬──────────────────────────────────────────────┘
+       │
+       ├──────────────────────────────────────────────▶  MongoDB
+       │                                (index / pointer only — no game data)
+       │
+       ├── 0G Storage ──────────────────────────────▶  Binary save files
+       │   (content-addressed by Merkle rootHash)       (msgpack encoded)
+       │
+       ├── 0G Chain (EVM, chainId 16600) ──────────▶  PlayerSaveAnchor.sol
+       │   (rootHash anchored on-chain per save)        (immutable proof)
+       │
+       ├── 0G DA ──────────────────────────────────▶  Leaderboard + commitments
+       │   (BLS-signed by >2/3 DA nodes)               (finality in ~60–120s)
+       │
+       └── 0G Compute ─────────────────────────────▶  Anti-cheat validation
+           (TEE-attested AI inference)                  (coin delta heuristics)
 ```
 
 ---
 
-## 2. Chain Responsibilities
+## Chain Responsibilities
 
-| Chain | ChainId | RPC | Handles |
-|---|---|---|---|
-| **0G EVM** | 16600 | `https://evmrpc.0g.ai` | `PlayerSaveAnchor` contract — rootHash per wallet |
-| **Somnia** | 5031 | `https://api.infra.mainnet.somnia.network` | IAP contract, game session contract |
+| Chain | Role | Config var |
+|---|---|---|
+| **Somnia** (chainId 5031) | IAP purchases, game registration (`registerUser`, `startGameFor`) | `SOMNIA_RPC_URL`, `GAME_CONTRACT_ADDRESS`, `IAP_CONTRACT_ADDRESS` |
+| **0G EVM** (chainId 16600) | `PlayerSaveAnchor.sol` — rootHash anchoring only | `ZG_RPC_URL`, `ZG_ANCHOR_CONTRACT_ADDRESS`, `ZG_PRIVATE_KEY` |
+| **0G Storage** | Binary player save files | `ZG_INDEXER_RPC` |
+| **0G DA** | Leaderboard commitments, save proofs | `ZG_DA_DISPERSER` |
+| **0G Compute** | TEE anti-cheat inference | `ZG_COMPUTE_API_KEY` |
 
-> The 0G EVM chain is where `PlayerSaveAnchor.sol` is deployed. Every save writes `wallet → rootHash → saveIndex` on-chain. This record is permanently verifiable by anyone at `https://chainscan.0g.ai` without trusting our backend.
-
----
-
-## 3. 0G Product Usage
-
-### 3.1 — 0G Storage (mainnet)
-
-**What:** Decentralised storage for binary player save files.  
-**How it works:** Files are split into 256-byte segments, each hashed into a Merkle tree. The root of that tree is the `rootHash` — a permanent content address. Same bytes always produce the same `rootHash`. The file is replicated across storage nodes.
-
-**Config:**
-```
-ZG_RPC_URL=https://evmrpc.0g.ai          # 0G chain for Storage tx
-ZG_INDEXER_RPC=https://indexer-storage-turbo.0g.ai
-ZG_PRIVATE_KEY=0x...                      # pays Storage gas (0G tokens)
-```
-
-**Save flow:**
-```
-Unity → POST /warzone/save/binary (raw msgpack body)
-Backend → writes to temp file → ZgFile.fromFilePath()
-        → indexer.upload(file, rpcUrl, signer)
-        → returns rootHash + txHash
-        → deletes temp file
-```
-
-**Load flow:**
-```
-Unity → GET /warzone/load/binary?wallet=0x...
-Backend → looks up latest rootHash in MongoDB
-        → indexer.download(rootHash, tmpFile, withProof=true)
-        → withProof=true: verifies every Merkle segment — tampered data throws
-        → returns raw binary to Unity
-```
-
-**Key properties:**
-- `withProof: true` on every download — tampered file is mathematically detected
-- Content-addressed: rootHash is the file's identity, not a server URL
-- Permanent: file exists as long as at least one node has it (replicas=3 default)
+Somnia contracts are **unchanged** from the original backend. All new decentralized functionality lives exclusively on 0G infrastructure.
 
 ---
 
-### 3.2 — 0G Chain (PlayerSaveAnchor contract)
+## 0G Stack — Product by Product
 
-**What:** Immutable on-chain record of `wallet → rootHash → saveIndex` on 0G EVM.
+### 1. 0G Storage
 
-**Contract:** `contracts/PlayerSaveAnchor.sol`  
-**Deploy:** `npm run deploy:anchor`  
-**Explorer:** `https://chainscan.0g.ai`
+Binary player saves are stored as msgpack-encoded files, content-addressed by Merkle rootHash.
+
+**Upload flow:**
+```
+Unity sends msgpack binary
+        │
+        ▼
+Backend: uploadBuffer(rawBuffer)
+        │
+        ├── Write to temp file
+        ├── ZgFile.fromFilePath()
+        ├── indexer.upload(zgFile, signer)
+        └── Returns { rootHash, txHash, size, checksum }
+```
+
+**Download flow:**
+```
+GET /load/binary?wallet=0x...
+        │
+        ▼
+Backend: downloadToBuffer(rootHash)
+        │
+        ├── indexer.download(rootHash, tmpPath, { withProof: true })
+        ├── Merkle proof verified by SDK (tamper-proof)
+        └── Returns raw buffer → streamed to Unity
+```
+
+- File: `services/ZeroGStorage.js`
+- SDK: `@0gfoundation/0g-storage-ts-sdk` (ESM, loaded via dynamic `import()`)
+- Indexer: `https://indexer-storage-turbo.0g.ai` (configurable via `ZG_INDEXER_RPC`)
+
+---
+
+### 2. 0G Chain — PlayerSaveAnchor Contract
+
+Every save creates an immutable on-chain proof on the 0G EVM chain.
+
+**Contract: `contracts/PlayerSaveAnchor.sol`**
 
 ```solidity
 function anchorSave(address wallet, string calldata rootHash, uint64 saveIndex) external
-function getLatestSave(address wallet) external view returns (string rootHash, uint64 saveIndex, uint64 timestamp)
+function getLatestSave(address wallet) external view returns (string, uint64, uint64)
+function hasSave(address wallet) external view returns (bool)
 ```
 
-**Properties:**
-- Permissionless — anyone can call it (player, backend, third party)
-- No admin key, not upgradeable
-- Anti-rollback enforced at contract level (`saveIndex` must be strictly increasing)
-- Called by backend after every 0G Storage upload (background, never blocks response)
+**Access control:**
+- Only `msg.sender == wallet` (the player themselves) OR `msg.sender == backendOperator` may call `anchorSave`.
+- `backendOperator` is set **immutably at deploy time** — the deployer wallet address. No admin key, no rotation.
+- Closes the griefing vector where any address could overwrite another player's record.
 
-**Why this matters for VCs/0G:**  
-Even if Metabharat's servers go offline forever, a player can:
-1. Call `getLatestSave(wallet)` on 0G chain → get `rootHash`
-2. Fetch file from 0G Storage using `rootHash`
-3. The Merkle proof verified by the SDK proves the file is authentic
+**Anti-rollback (contract level):**
+- `SaveRecord` contains an `exists` boolean.
+- First save: sets `exists = true`, accepts any `saveIndex`.
+- Subsequent saves: `saveIndex` must be **strictly greater** than the current value.
+- The `exists` flag eliminates the `saveIndex == 0` bypass bug — a second anchor with index 0 is correctly rejected after the first.
 
-The studio cannot alter a player's save without the player knowing.
+**Deploy:**
+```bash
+# Set in .env:
+# ANCHOR_BYTECODE=0x<compiled bytecode from Remix>
+node scripts/deployAnchor.js
+```
+
+The deployer wallet becomes the immutable `backendOperator`. Explorer: `https://chainscan.0g.ai`
+
+- File: `services/ZeroGChain.js`
+- Uses: `ethers-v6` alias (`npm:ethers@^6`)
 
 ---
 
-### 3.3 — 0G DA (Data Availability layer)
+### 3. 0G DA (Data Availability)
 
-**What:** Every save commitment and leaderboard state blob is published to 0G DA.  
-**Status:** Testnet (`disperser-testnet.0g.ai:51001`) — mainnet endpoint TBD.  
-**When mainnet ships:** Change one env var (`ZG_DA_DISPERSER`). No code changes.
+Save commitments and leaderboard entries are dispersed to 0G DA nodes and BLS-signed by >2/3 of the committee.
 
-**Config:**
+**Flow:**
 ```
-ZG_DA_DISPERSER=disperser-testnet.0g.ai:51001
-ZG_DA_TLS=false          # true on mainnet
+publishCommitment(payload, wallet)
+        │
+        ├── gRPC: DisperseBlob (disperser-testnet.0g.ai:51001)
+        ├── Poll GetBlobStatus every 5s
+        └── Status 3 (FINALIZED) → store BlobVerificationProof in MongoDB
 ```
 
-**What gets submitted:**
-- After each save: `{ rootHash, wallet, saveIndex, coinSnapshot, ts }` blob
-- Blob is BLS-signed by >2/3 of DA nodes → `FINALIZED` status
-- Finality proof (batchId, blobIndex, batchHeaderHash) stored in MongoDB
+**Finality time:** 60–120 seconds on testnet. The HTTP response is never blocked — DA runs in a `setImmediate` background pipeline. The `daStatus` field in MongoDB updates from `pending` → `finalized` once the DA nodes confirm.
 
-**What DA proves:**  
-The leaderboard score existed and was available at `referenceBlockNumber`. BLS signatures from the DA committee make retroactive forgery computationally impossible. This means a DA-backed leaderboard score has a cryptographic timestamp that we cannot fake retroactively.
+**Leaderboard entries with `daStatus: "finalized"` carry a `verified: true` flag** — the score has been BLS-signed by the DA committee, not just stored in a database.
 
-**DA flow:**
-```
-save uploaded → setImmediate (non-blocking):
-  publishCommitment({ rootHash, wallet, saveIndex, coinSnapshot })
-  → DisperseBlob (gRPC)
-  → poll GetBlobStatus every 5s
-  → status === FINALIZED (BLS signed)
-  → store DaCommitment in MongoDB
-  → daStatus: 'finalized' in PlayerSaveRecord
-```
+- File: `services/ZeroGDA.js`
+- Proto: `proto/disperser.proto`
+- gRPC client: `@grpc/grpc-js` + `@grpc/proto-loader`
 
 ---
 
-### 3.4 — 0G Compute (TEE anti-cheat)
+### 4. 0G Compute — Anti-Cheat
 
-**What:** AI model runs inside a Trusted Execution Environment. Output is signed by an attested key — the signature is verifiable on-chain. Neither us nor 0G can fake a "CLEAN" verdict.
+Save validation is sent to 0G Compute's TEE-attested AI router.
 
-**Config:**
-```
-ZG_COMPUTE_API_KEY=sk-...          # get at pc.0g.ai → Dashboard → API Keys
-ZG_COMPUTE_BASE_URL=https://router-api.0g.ai/v1
-ZG_COMPUTE_MODEL=zai-org/GLM-5-FP8
-```
+**What it checks:**
+- `coinDelta` (coins gained since last save) vs. time elapsed
+- `saveIndex` strictly increasing
+- Warzone-specific heuristics (max ~5000 coins / 30 min)
 
-**Triggers (cost-controlled — not every save):**
-- First ever save from a wallet
-- `coinDelta > 5000` (large single-session gain)
-- `timeDeltaSeconds < 30` AND `coinDelta > 100` (rapid saves with big gains)
-- `saveIndex <= previousSaveIndex` (rollback attempt)
+**Binding check (replay-attack prevention):**
+The system prompt instructs the model to echo back the `rootHash`. The backend verifies `parsed.rootHash === rootHash` — a result from a different save file cannot be replayed against this one.
 
-**Anti-cheat rules (in system prompt):**
-- Max ~5000 coins per 30 minutes of play
-- `saveIndex` must always strictly increase
-- `timeDelta < 10s` + `coinDelta > 0` → always SUSPICIOUS
-- Flags: `IMPOSSIBLE_COIN_RATE`, `NEGATIVE_TIME_DELTA`, `ROLLBACK_DETECTED`, `STAT_OVERFLOW`
-- Verdicts: `CLEAN` / `SUSPICIOUS` / `REJECTED`
+**Honest limitations:**
+- `teeVerified: false` is the default path — the TEE attestation is requested but not guaranteed on testnet.
+- This is a heuristic layer, not cryptographic proof. A server-side compromise can still construct fake metadata.
+- Best used as a first-pass filter and demo story, not as the sole anti-cheat mechanism.
 
-**Binding check (anti-replay):**  
-The model MUST echo back the `rootHash` in its JSON response. If the rootHash doesn't match, the result is rejected. This prevents replaying a "CLEAN" verdict from save A onto save B.
+**Trigger heuristic** (`shouldTriggerCompute`): only runs when `coinDelta > 100` or `saveIndex` jumps by more than 1. Avoids spending compute tokens on every save.
 
-**TEE verification:**  
-The `x_0g_trace.tee_verified` flag in the response confirms the inference ran inside a TEE. The provider's attestation key is registered on-chain — you can verify independently.
+- File: `services/ZeroGCompute.js`
+- Router: `https://router-api.0g.ai/v1/chat/completions`
 
 ---
 
-## 4. Data Flow — Complete Save Lifecycle
+## MongoDB Role
+
+MongoDB stores **only metadata pointers** — it never holds actual game data.
 
 ```
-1. Unity serialises game state to msgpack binary
-
-2. Unity POST /warzone/save/binary
-   Headers: Content-Type: application/octet-stream
-            X-Wallet-Address: 0x...
-            X-Save-Index: 42 (optional)
-
-3. Backend validates:
-   - Wallet address format
-   - Buffer not empty, not > 5MB
-   - saveIndex > current latest (anti-rollback)
-
-4. Backend uploads to 0G Storage:
-   ZgFile.fromFilePath(tmpFile)
-   indexer.upload(file, rpcUrl, signer)
-   → rootHash = "0x..."  txHash = "0x..."
-
-5. Backend creates PlayerSaveRecord in MongoDB:
-   { walletAddress, rootHash, txHash, fileSize, checksum,
-     saveIndex, coinSnapshot, daStatus: 'pending' }
-
-6. Backend responds to Unity immediately:
-   201 { ok, rootHash, txHash, saveIndex, size, daStatus: 'pending' }
-
-7. Background pipeline (setImmediate — never blocks):
-
-   a. 0G Compute anti-cheat (if triggered by heuristics):
-      validateSave({ saveIndex, coinDelta, timeDelta, ... }, rootHash)
-      → verdict: CLEAN / SUSPICIOUS / REJECTED
-      → update PlayerSaveRecord.computeStatus
-
-   b. 0G Chain anchor:
-      anchorSave(wallet, rootHash, saveIndex)
-      → on-chain tx on 0G EVM chain
-      → update PlayerSaveRecord.anchorTxHash + anchorBlock
-
-   c. 0G DA commitment:
-      publishCommitment({ rootHash, wallet, saveIndex, coinSnapshot })
-      → DisperseBlob → poll finality → FINALIZED
-      → update PlayerSaveRecord.daStatus = 'finalized'
-      → store daCommitment (batchId, blobIndex, batchHeaderHash)
+PlayerSaveRecord {
+  walletAddress   → lookup key
+  rootHash        → pointer to 0G Storage file
+  saveIndex       → anti-rollback counter
+  coinSnapshot    → leaderboard value (denormalized)
+  daStatus        → pending / finalized / failed / skipped
+  daCommitment    → BlobVerificationProof from DA nodes
+  computeStatus   → skipped / pending / validated / rejected
+  computeValidation → TEE verdict details
+  anchorTxHash    → 0G chain tx hash
+}
 ```
+
+The actual game binary lives on 0G Storage, addressed by `rootHash`. If MongoDB is wiped, saves can be recovered from 0G Storage — rootHash is the canonical identifier.
 
 ---
 
-## 5. Data Flow — Load Lifecycle
+## Dual-Write Strategy (Backward Compatibility)
+
+Existing Unity builds using the legacy `POST /warzone` JSON endpoint continue working unchanged. Every JSON save also triggers a background 0G Storage upload via `persistProfileTo0G()`.
 
 ```
-1. Unity GET /warzone/load/binary?wallet=0x...
+POST /warzone  (legacy JSON)
+        │
+        ├── Save to MongoDB (existing behavior — unchanged)
+        ├── Return 200 to client (no latency added)
+        └── setImmediate → persistProfileTo0G()
+                │
+                ├── msgpack-encode profile
+                ├── uploadBuffer → 0G Storage
+                ├── Create PlayerSaveRecord
+                └── Background pipeline (anchor → DA → compute)
+```
 
-2. Backend queries MongoDB for latest save:
-   PlayerSaveRecord.findOne({ walletAddress }).sort({ saveIndex: -1 })
+New Unity builds should use `POST /warzone/save/binary` directly (sends msgpack, no JSON conversion).
 
-3. Backend downloads from 0G Storage:
-   indexer.download(rootHash, tmpFile, withProof=true)
-   withProof=true → SDK verifies every Merkle segment
-   → tampered data throws before hitting disk
+---
 
-4. Backend responds:
-   Content-Type: application/octet-stream
-   X-Root-Hash: <rootHash>
-   X-Save-Index: <n>
-   X-Da-Status: finalized
-   Body: raw msgpack binary
+## Save Pipeline (Full)
 
-5. Unity deserialises msgpack → game state restored
+```
+POST /warzone/save/binary
+        │
+        ├── [middleware] rateLimiter (10/min)
+        ├── [middleware] verifyUser (JWT — wallet from token)
+        ├── [middleware] express.raw (binary body parser)
+        │
+        ├── Anti-rollback check (DB: saveIndex must increase)
+        ├── uploadBuffer → 0G Storage → rootHash
+        ├── PlayerSaveRecord.create (MongoDB)
+        ├── HTTP 201 response ←──────────────── client unblocked here
+        │
+        └── setImmediate (background — never blocks response)
+                ├── anchorSaveHash → PlayerSaveAnchor.sol (0G chain)
+                ├── publishCommitment → 0G DA (poll until FINALIZED)
+                └── validateSave → 0G Compute (if coinDelta > threshold)
 ```
 
 ---
 
-## 6. MongoDB Role (Index Only)
+## 4-Layer Verification
 
-MongoDB is **no longer the source of truth** for player game data.  
-It stores only lightweight metadata — pointers to the actual data on 0G.
+`GET /warzone/verify?wallet=0x...` runs all four checks:
 
-| Collection | Stores | Source of truth? |
+| Layer | What it checks | Source |
 |---|---|---|
-| `PlayerSaveRecord` | rootHash, saveIndex, coinSnapshot, DA commitment, compute verdict | Pointer only |
-| `WarzonePlayerProfile` | Full JSON profile (legacy + IAP delivery) | Yes (IAP still updates this) |
-| `WarzoneIaAppurchases` | IAP transaction records | Yes |
-| `WarzoneNameWallls` | Player display names | Yes |
-| `NoncStates` | Somnia transaction nonces | Yes |
+| 1. DB record | PlayerSaveRecord exists, rootHash + saveIndex consistent | MongoDB |
+| 2. DA proof | `daStatus === finalized`, BlobVerificationProof valid | 0G DA |
+| 3. File checksum | Re-download from 0G Storage, SHA-256 matches stored checksum | 0G Storage |
+| 4. Compute verdict | `computeStatus === validated`, no REJECTED flags | 0G Compute |
 
-> `WarzonePlayerProfile` is still written on every `POST /warzone` (legacy JSON save). This ensures IAP delivery, leaderboard (legacy), and existing Unity builds keep working without change.
-
----
-
-## 7. Dual-Write Strategy (backward compatible)
-
-Every `POST /warzone` (existing JSON API) also triggers a background 0G upload:
-
-```
-profileController.saveProfile()
-  → saves to MongoDB (WarzonePlayerProfile)   ← existing
-  → runInBackground: persistProfileTo0G()     ← new (async, never delays response)
-      → msgpack.encode(profileObj)
-      → uploadBuffer(buffer)
-      → PlayerSaveRecord.create(...)
-      → runSavePipeline (anchor + DA + compute)
-```
-
-This means:
-- Existing Unity builds work without any changes
-- Every save is automatically replicated to 0G Storage
-- The game becomes decentralised transparently
+A save passes all 4 layers only if it was genuinely uploaded, DA-finalized, not tampered with, and passed heuristic anti-cheat.
 
 ---
 
-## 8. 4-Layer Verification (GET /warzone/verify)
+## Environment Variables
 
-```
-L1 — MongoDB record exists (wallet + rootHash match)
-L2 — DA proof: verifyCommitment(daCommitment) → still FINALIZED on DA nodes
-L3 — File checksum: re-download from 0G Storage + SHA-256 compare
-L4 — Compute verdict: TEE-attested CLEAN result (or re-run if missing)
-
-Verdict: CLEAN (all pass) | TAMPERED (any fail) | DA_PENDING
-```
-
----
-
-## 9. Environment Variables
-
-### Somnia (unchanged from legacy)
+### Required — Somnia (existing contracts)
 ```env
 SOMNIA_RPC_URL=https://api.infra.mainnet.somnia.network
-SOMNIA_RPC_URLS=<comma-separated fallbacks>
-SOMNIA_CHAIN_ID=5031
 GAME_CONTRACT_ADDRESS=0x...
-GAME_OWNER_PRIVATE_KEY=0x...
 IAP_CONTRACT_ADDRESS=0x...
-IAP_RPC_URL=https://api.infra.mainnet.somnia.network
-IAP_CHAIN_ID=5031
+OWNER_PRIVATE_KEY=0x...       # Somnia backend wallet
 ```
 
-### 0G Storage (mainnet)
+### Required — 0G Stack
 ```env
 ZG_RPC_URL=https://evmrpc.0g.ai
-ZG_INDEXER_RPC=https://indexer-storage-turbo.0g.ai
-ZG_PRIVATE_KEY=0x...                  # pays Storage upload gas
-ZG_EXPECTED_REPLICAS=3
-```
-
-### 0G Chain (anchor contract)
-```env
 ZG_CHAIN_ID=16600
-ZG_ANCHOR_CONTRACT_ADDRESS=0x...     # from: npm run deploy:anchor
-```
-
-### 0G DA (testnet now, env-swap when mainnet ships)
-```env
+ZG_ANCHOR_CONTRACT_ADDRESS=0x...   # from: node scripts/deployAnchor.js
+ZG_PRIVATE_KEY=0x...               # 0G chain wallet (becomes backendOperator)
+ZG_INDEXER_RPC=https://indexer-storage-turbo.0g.ai
 ZG_DA_DISPERSER=disperser-testnet.0g.ai:51001
-ZG_DA_TLS=false
-ZG_DA_POLL_TIMEOUT_MS=120000
-ZG_DA_POLL_INTERVAL_MS=5000
 ```
 
-### 0G Compute (optional — anti-cheat disabled if missing)
+### Optional — 0G Compute
 ```env
-ZG_COMPUTE_API_KEY=sk-...
-ZG_COMPUTE_BASE_URL=https://router-api.0g.ai/v1
-ZG_COMPUTE_MODEL=zai-org/GLM-5-FP8
-ZG_COMPUTE_MIN_CONFIDENCE=0.70
-ZG_COMPUTE_TIMEOUT_MS=30000
-ZG_COMPUTE_ROUTING=latency
+ZG_COMPUTE_API_KEY=...    # if not set, compute anti-cheat is skipped
 ```
 
-### App
+### Optional — App Config
 ```env
-PORT=3300
-NODE_ENV=production
 MONGO_URI=mongodb+srv://...
 MONGO_DB_NAME=new-warzone
 JWT_SECRET=...
-ZG_ENABLED=true          # set false to disable all 0G features locally
+PORT=3300
+ZG_ENABLED=true           # set false to disable all 0G ops (local dev)
+TRUST_PROXY=1
+SLOW_REQUEST_MS=2000      # log warning if request takes longer
+SLOW_MONGO_MS=200         # log warning if query takes longer
+MONGOOSE_DEBUG_LOGS=false # set true to log every mongo command + duration
 ```
+
+### Key separation note
+`ZG_PRIVATE_KEY` is currently used for both 0G Storage uploads (signing txs) and 0G chain anchoring. For production, use separate keys — one leak compromises both operations. Separate env vars (`ZG_STORAGE_KEY` / `ZG_CHAIN_KEY`) can be split in `ZeroGStorage.js` and `ZeroGChain.js`.
 
 ---
 
-## 10. Contract Addresses (to be filled after deployment)
+## Contract Addresses
 
 | Contract | Chain | Address |
 |---|---|---|
-| `PlayerSaveAnchor` | 0G EVM (16600) | _deploy with `npm run deploy:anchor`_ |
-| Game session contract | Somnia (5031) | `0xe5cB757613bE827b836029d5E2700D76466745BD` |
-| IAP contract | Somnia (5031) | `0x13D6C683856eB191050A0E332B0751e03a70fc2B` |
+| `PlayerSaveAnchor` | 0G EVM (16600) | Set after `node scripts/deployAnchor.js` |
+| IAP Contract | Somnia (5031) | `IAP_CONTRACT_ADDRESS` env var |
+| Game Contract | Somnia (5031) | `GAME_CONTRACT_ADDRESS` env var |
 
 ---
 
-## 11. Key Files
+## Rate Limits (per IP)
 
-```
-warzone-backend-0g/
-├── contracts/
-│   └── PlayerSaveAnchor.sol      ← deploy on 0G chain
-├── proto/
-│   └── disperser.proto           ← 0G DA gRPC schema
-├── services/
-│   ├── ZeroGStorage.js           ← upload / download binary saves
-│   ├── ZeroGChain.js             ← anchor rootHash on 0G EVM
-│   ├── ZeroGDA.js                ← DA commitments via gRPC
-│   └── ZeroGCompute.js           ← TEE anti-cheat
-├── models/
-│   └── PlayerSaveRecord.js       ← 0G metadata index (not game data)
-├── controllers/
-│   └── zgController.js           ← 5 new endpoints
-├── scripts/
-│   └── deployAnchor.js           ← one-time 0G chain deploy
-└── INFRASTRUCTURE.md             ← this file
-```
+| Endpoint | Limit |
+|---|---|
+| `POST /save/binary` | 10 req/min |
+| `GET /load/binary` | 30 req/min |
+| `GET /save/metadata` | 60 req/min |
+| `GET /verify` | 20 req/min |
+| `GET /leaderboard/decentralized` | 30 req/min |
+
+Rate limiter is in-memory (`routes/middleware/rateLimiter.js`). For multi-instance deployments, replace with Redis-backed rate limiting.

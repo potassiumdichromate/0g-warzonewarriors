@@ -93,7 +93,7 @@ const corsOptions = {
     'expires',
     'if-modified-since',
     'X-HTTP-Method-Override',
-    // 0G binary save headers (sent by Unity)
+    // 0G binary save headers
     'X-Wallet-Address',
     'X-Save-Index',
     'X-Root-Hash',
@@ -115,7 +115,7 @@ app.use(cors(corsOptions));
 // Handle preflight requests explicitly
 app.options('*', cors(corsOptions));
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Request latency logging to identify slow APIs

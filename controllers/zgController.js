@@ -158,11 +158,11 @@ exports.saveBinary = async (req, res) => {
       return res.status(503).json({ ok: false, message: '0G Storage is disabled (ZG_ENABLED=false)' });
     }
 
-    const wallet = normalizeWallet(
-      req.headers['x-wallet-address'] || req.walletAddress || req.body?.walletAddress,
-    );
+    // Wallet comes from the JWT (set by verifyUser middleware). Never trust the raw header
+    // since verifyUser already decoded and verified the token before we get here.
+    const wallet = normalizeWallet(req.walletAddress);
     if (!wallet || !/^0x[0-9a-f]{40}$/.test(wallet)) {
-      return res.status(400).json({ ok: false, message: 'Invalid wallet address (X-Wallet-Address header required)' });
+      return res.status(401).json({ ok: false, message: 'No authenticated wallet — JWT required' });
     }
 
     // req.body is a raw Buffer (express.raw middleware applied in server.js)
@@ -409,7 +409,7 @@ exports.getDecentralizedLeaderboard = async (req, res) => {
     const entries = top.map((e, i) => ({
       rank:         i + 1,
       walletAddress: e._id,
-      name:         nameMap[e._id] || `JohnDigger${Math.floor(Math.random() * 9999)}`,
+      name:         nameMap[e._id] || `Warrior_${e._id.slice(2, 8)}`,
       coin:         e.coinSnapshot,
       rootHash:     e.rootHash,
       daStatus:     e.daStatus,
