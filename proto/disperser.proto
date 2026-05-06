@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package disperser;
+
+service Disperser {
+  rpc DisperseBlob(DisperseBlobRequest) returns (DisperseBlobReply);
+  rpc GetBlobStatus(BlobStatusRequest) returns (BlobStatusReply);
+}
+
+message AccountID {
+  string account_id = 1;
+}
+
+message DisperseBlobRequest {
+  bytes data = 1;
+  repeated uint32 custom_quorum_numbers = 2;
+  AccountID account_id = 3;
+}
+
+enum BlobStatus {
+  UNKNOWN = 0;
+  PROCESSING = 1;
+  FAILED = 2;
+  FINALIZED = 3;
+  INSUFFICIENT_SIGNATURES = 4;
+}
+
+message DisperseBlobReply {
+  BlobStatus result = 1;
+  bytes request_id = 2;
+}
+
+message BlobStatusRequest {
+  bytes request_id = 1;
+}
+
+message BatchHeader {
+  bytes batch_root = 1;
+  uint32 reference_block_number = 2;
+}
+
+message BatchMetadata {
+  BatchHeader batch_header = 1;
+  bytes signatory_record_hash = 2;
+  uint32 confirmation_block_number = 3;
+  bytes batch_header_hash = 4;
+}
+
+message BlobVerificationProof {
+  uint32 batch_id = 1;
+  uint32 blob_index = 2;
+  BatchMetadata batch_metadata = 3;
+  bytes inclusion_proof = 4;
+  bytes quorum_indices = 5;
+}
+
+message SignedBatch {
+  BatchHeader header = 1;
+  bytes attestation = 2;
+}
+
+message BlobStatusReply {
+  BlobStatus status = 1;
+  SignedBatch signed_batch = 2;
+  BlobVerificationProof blob_verification_proof = 3;
+}

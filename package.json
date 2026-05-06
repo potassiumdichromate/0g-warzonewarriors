@@ -1,0 +1,44 @@
+{
+  "name": "warzone-backend",
+  "version": "2.0.0",
+  "description": "Decentralized game backend for Warzone Warriors — powered by 0G Storage, 0G DA, and 0G Compute",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "configure:iap": "node scripts/configureIAP.js",
+    "register:guns": "node scripts/registerGuns.js",
+    "deploy:anchor": "node scripts/deployAnchor.js"
+  },
+  "keywords": [
+    "web3",
+    "wallet",
+    "game",
+    "blockchain",
+    "0g",
+    "decentralized",
+    "storage",
+    "da",
+    "compute"
+  ],
+  "author": "Kult Games",
+  "license": "MIT",
+  "dependencies": {
+    "@0gfoundation/0g-storage-ts-sdk": "^0.3.0",
+    "@grpc/grpc-js": "^1.11.1",
+    "@grpc/proto-loader": "^0.7.13",
+    "@msgpack/msgpack": "^3.0.0",
+    "cors": "^2.8.5",
+    "crypto": "^1.0.1",
+    "dotenv": "^16.4.5",
+    "ethers": "^5.8.0",
+    "ethers-v6": "npm:ethers@^6.13.0",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^7.6.1",
+    "multer": "^1.4.5-lts.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
