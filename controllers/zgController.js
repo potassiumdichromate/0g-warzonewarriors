@@ -431,6 +431,359 @@ exports.getDecentralizedLeaderboard = async (req, res) => {
   }
 };
 
+// ─── GET /warzone/dashboard ───────────────────────────────────────────────────
+// All-in-one player card. One call loads the entire 0G profile screen.
+
+exports.getDashboard = async (req, res) => {
+  try {
+    const wallet = normalizeWallet(req.walletAddress);
+
+    const [latest, totalSaves, daFinalizedCount, computeCleanCount, rankAgg] = await Promise.all([
+      PlayerSaveRecord.findOne({ walletAddress: wallet })
+        .sort({ saveIndex: -1 })
+        .lean(),
+
+      PlayerSaveRecord.countDocuments({ walletAddress: wallet }),
+
+      PlayerSaveRecord.countDocuments({ walletAddress: wallet, daStatus: 'finalized' }),
+
+      PlayerSaveRecord.countDocuments({ walletAddress: wallet, computeStatus: 'validated',
+        'computeValidation.verdict': 'CLEAN' }),
+
+      // Rank: count how many wallets have a higher coinSnapshot than this wallet's latest
+      PlayerSaveRecord.aggregate([
+        { $sort: { saveIndex: -1 } },
+        { $group: { _id: '$walletAddress', coinSnapshot: { $first: '$coinSnapshot' } } },
+        { $sort: { coinSnapshot: -1 } },
+        { $group: { _id: null, wallets: { $push: '$_id' } } },
+        { $project: { rank: { $add: [{ $indexOfArray: ['$wallets', wallet] }, 1] } } },
+      ]),
+    ]);
+
+    if (!latest) {
+      return res.json({
+        ok: true,
+        wallet,
+        hasData: false,
+        message: 'No saves found — play the game to see your 0G profile',
+      });
+    }
+
+    let onChain = null;
+    try { onChain = await getOnChainSave(wallet); } catch (_) {}
+
+    const rank = rankAgg[0]?.rank > 0 ? rankAgg[0].rank : null;
+    const trustScore = totalSaves > 0 ? Math.round((daFinalizedCount / totalSaves) * 100) : 0;
+
+    const pipeline = {
+      storage:  { status: 'done',                          label: 'Saved on 0G Storage',       rootHash: latest.rootHash },
+      chain:    { status: onChain?.rootHash ? 'done' : 'pending', label: 'Anchored on 0G Chain',
+                  txHash: latest.anchorTxHash,
+                  explorerUrl: latest.anchorTxHash ? `https://chainscan.0g.ai/tx/${latest.anchorTxHash}` : null },
+      da:       { status: latest.daStatus,                 label: daLabel(latest.daStatus),    commitment: latest.daCommitment },
+      compute:  { status: latest.computeStatus,            label: computeLabel(latest.computeStatus), verdict: latest.computeValidation?.verdict ?? null },
+    };
+
+    return res.json({
+      ok: true,
+      wallet,
+      hasData: true,
+      trustScore,
+      rank,
+      totalSaves,
+      daFinalizedCount,
+      computeCleanCount,
+      latestSave: {
+        rootHash:   latest.rootHash,
+        saveIndex:  latest.saveIndex,
+        fileSize:   latest.fileSize,
+        coinSnapshot: latest.coinSnapshot,
+        savedAt:    latest.createdAt,
+        source:     latest.source,
+      },
+      pipeline,
+      onChain,
+    });
+  } catch (err) {
+    console.error('[zgController.getDashboard]', err);
+    return res.status(500).json({ ok: false, message: 'Dashboard fetch failed' });
+  }
+};
+
+function daLabel(status) {
+  return { pending: 'DA commitment pending…', finalized: 'Finalised by 0G DA nodes',
+           failed: 'DA commitment failed', skipped: 'DA skipped' }[status] || status;
+}
+function computeLabel(status) {
+  return { skipped: 'Anti-cheat not run', pending: 'Anti-cheat pending…',
+           validated: 'Passed anti-cheat (0G Compute)', rejected: 'Flagged by anti-cheat' }[status] || status;
+}
+
+// ─── GET /warzone/save/history ────────────────────────────────────────────────
+// Paginated save timeline. Shows every save with its full pipeline status.
+
+exports.getSaveHistory = async (req, res) => {
+  try {
+    const wallet = normalizeWallet(req.walletAddress);
+    const page   = Math.max(1, parseInt(req.query.page  || '1',  10));
+    const limit  = Math.min(50, Math.max(1, parseInt(req.query.limit || '10', 10)));
+    const skip   = (page - 1) * limit;
+
+    const [records, total] = await Promise.all([
+      PlayerSaveRecord.find({ walletAddress: wallet })
+        .sort({ saveIndex: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      PlayerSaveRecord.countDocuments({ walletAddress: wallet }),
+    ]);
+
+    const entries = records.map(r => ({
+      saveIndex:   r.saveIndex,
+      rootHash:    r.rootHash,
+      fileSize:    r.fileSize,
+      coinSnapshot: r.coinSnapshot,
+      source:      r.source,
+      savedAt:     r.createdAt,
+      pipeline: {
+        storage:  { status: 'done',       label: 'Stored on 0G Storage' },
+        chain:    { status: r.anchorTxHash ? 'done' : 'pending',
+                    label:  r.anchorTxHash ? 'Anchored on 0G Chain' : 'Chain anchor pending…',
+                    txHash: r.anchorTxHash || null,
+                    explorerUrl: r.anchorTxHash ? `https://chainscan.0g.ai/tx/${r.anchorTxHash}` : null },
+        da:       { status: r.daStatus,   label: daLabel(r.daStatus) },
+        compute:  { status: r.computeStatus, label: computeLabel(r.computeStatus),
+                    verdict: r.computeValidation?.verdict ?? null },
+      },
+      fullyVerified: r.anchorTxHash && r.daStatus === 'finalized' && r.computeStatus === 'validated',
+    }));
+
+    return res.json({
+      ok: true,
+      wallet,
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+      entries,
+    });
+  } catch (err) {
+    console.error('[zgController.getSaveHistory]', err);
+    return res.status(500).json({ ok: false, message: 'History fetch failed' });
+  }
+};
+
+// ─── GET /warzone/save/pipeline/:rootHash ─────────────────────────────────────
+// Live pipeline status for one specific save.
+// Frontend polls this after POST /save/binary to drive a progress tracker UI.
+
+exports.getSavePipeline = async (req, res) => {
+  try {
+    const { rootHash } = req.params;
+    if (!rootHash) return res.status(400).json({ ok: false, message: 'rootHash param required' });
+
+    const record = await PlayerSaveRecord.findOne({ rootHash }).lean();
+    if (!record) return res.status(404).json({ ok: false, message: 'No record for this rootHash' });
+
+    const steps = [
+      {
+        id:     'storage',
+        label:  '0G Storage',
+        detail: 'Binary save uploaded and content-addressed',
+        status: 'done',
+        value:  record.rootHash,
+      },
+      {
+        id:     'chain',
+        label:  '0G Chain Anchor',
+        detail: 'rootHash written to PlayerSaveAnchor contract on 0G EVM',
+        status: record.anchorTxHash ? 'done' : 'pending',
+        value:  record.anchorTxHash || null,
+        explorerUrl: record.anchorTxHash ? `https://chainscan.0g.ai/tx/${record.anchorTxHash}` : null,
+      },
+      {
+        id:     'da',
+        label:  '0G Data Availability',
+        detail: 'Commitment BLS-signed by 0G DA committee',
+        status: record.daStatus,
+        value:  record.daCommitment?.requestId || null,
+        finalizedAt: record.daCommitment?.finalizedAt || null,
+      },
+      {
+        id:     'compute',
+        label:  '0G Compute Anti-Cheat',
+        detail: 'Save validated by TEE-attested AI inference',
+        status: record.computeStatus,
+        value:  record.computeValidation?.verdict || null,
+        confidence: record.computeValidation?.confidence || null,
+      },
+    ];
+
+    const doneCount = steps.filter(s => s.status === 'done' || s.status === 'finalized' || s.status === 'validated').length;
+    const allDone   = doneCount === steps.length;
+
+    return res.json({
+      ok: true,
+      rootHash,
+      wallet:    record.walletAddress,
+      saveIndex: record.saveIndex,
+      progress:  Math.round((doneCount / steps.length) * 100),
+      allDone,
+      steps,
+      savedAt:   record.createdAt,
+    });
+  } catch (err) {
+    console.error('[zgController.getSavePipeline]', err);
+    return res.status(500).json({ ok: false, message: 'Pipeline status fetch failed' });
+  }
+};
+
+// ─── GET /warzone/proof/:rootHash ─────────────────────────────────────────────
+// Shareable public proof card for a specific save.
+// Anyone can open this URL and independently verify the save is real.
+
+exports.getProof = async (req, res) => {
+  try {
+    const { rootHash } = req.params;
+    const record = await PlayerSaveRecord.findOne({ rootHash }).lean();
+    if (!record) return res.status(404).json({ ok: false, message: 'No proof found for this rootHash' });
+
+    const WarzoneNameWallet = require('../models/nameWallet');
+    const nameRecord = await WarzoneNameWallet.findOne({ walletAddress: record.walletAddress }).lean();
+    const displayName = nameRecord?.name || `Warrior_${record.walletAddress.slice(2, 8)}`;
+
+    let onChain = null;
+    try { onChain = await getOnChainSave(record.walletAddress); } catch (_) {}
+
+    return res.json({
+      ok: true,
+      proof: {
+        rootHash:     record.rootHash,
+        wallet:       record.walletAddress,
+        displayName,
+        saveIndex:    record.saveIndex,
+        coinSnapshot: record.coinSnapshot,
+        fileSize:     record.fileSize,
+        checksum:     record.checksum,
+        savedAt:      record.createdAt,
+
+        storage: {
+          verified: true,
+          rootHash: record.rootHash,
+          note: 'File is content-addressed on 0G Storage — rootHash is the Merkle root of the file',
+        },
+
+        chain: {
+          verified:    !!record.anchorTxHash,
+          txHash:      record.anchorTxHash || null,
+          block:       record.anchorBlock  || null,
+          explorerUrl: record.anchorTxHash ? `https://chainscan.0g.ai/tx/${record.anchorTxHash}` : null,
+          contractUrl: process.env.ZG_ANCHOR_CONTRACT_ADDRESS
+            ? `https://chainscan.0g.ai/address/${process.env.ZG_ANCHOR_CONTRACT_ADDRESS}`
+            : null,
+          onChainRecord: onChain,
+        },
+
+        da: {
+          verified:    record.daStatus === 'finalized',
+          status:      record.daStatus,
+          commitment:  record.daCommitment || null,
+          note: record.daStatus === 'finalized'
+            ? 'This commitment was BLS-signed by >2/3 of 0G DA nodes'
+            : 'DA finalization pending',
+        },
+
+        compute: {
+          verified:   record.computeStatus === 'validated',
+          status:     record.computeStatus,
+          verdict:    record.computeValidation?.verdict    || null,
+          confidence: record.computeValidation?.confidence || null,
+          flags:      record.computeValidation?.flags      || [],
+          teeVerified: record.computeValidation?.teeVerified || false,
+        },
+
+        allVerified: !!(
+          record.anchorTxHash &&
+          record.daStatus     === 'finalized' &&
+          record.computeStatus === 'validated'
+        ),
+      },
+    });
+  } catch (err) {
+    console.error('[zgController.getProof]', err);
+    return res.status(500).json({ ok: false, message: 'Proof fetch failed' });
+  }
+};
+
+// ─── GET /warzone/network/status ──────────────────────────────────────────────
+// Live health check for all 0G services.
+// Frontend can show a "0G Network" status banner so users understand delays.
+
+exports.getNetworkStatus = async (req, res) => {
+  const results = await Promise.allSettled([
+    pingStorage(),
+    pingChain(),
+    pingDA(),
+    pingCompute(),
+  ]);
+
+  const [storage, chain, da, compute] = results.map(r =>
+    r.status === 'fulfilled' ? r.value : { status: 'offline', latencyMs: null, error: r.reason?.message }
+  );
+
+  const allOnline = [storage, chain, da, compute].every(s => s.status === 'online');
+
+  return res.json({
+    ok: true,
+    allOnline,
+    checkedAt: new Date().toISOString(),
+    services: { storage, chain, da, compute },
+  });
+};
+
+async function pingStorage() {
+  const start = Date.now();
+  const url   = process.env.ZG_INDEXER_RPC || 'https://indexer-storage-turbo.0g.ai';
+  const r     = await fetch(`${url}/api/v1/status`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
+  return { service: '0G Storage', status: r?.ok ? 'online' : 'degraded', latencyMs: Date.now() - start, endpoint: url };
+}
+
+async function pingChain() {
+  const start = Date.now();
+  const url   = process.env.ZG_RPC_URL || 'https://evmrpc.0g.ai';
+  const r     = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_blockNumber', params: [], id: 1 }),
+    signal: AbortSignal.timeout(5000),
+  }).catch(() => null);
+  const json = r ? await r.json().catch(() => null) : null;
+  return {
+    service: '0G Chain', status: json?.result ? 'online' : 'degraded',
+    latencyMs: Date.now() - start, blockNumber: json?.result ? parseInt(json.result, 16) : null, endpoint: url,
+  };
+}
+
+async function pingDA() {
+  // DA is gRPC — just check if the host resolves. Treat as online if ZG_DA_DISPERSER is set.
+  const endpoint = process.env.ZG_DA_DISPERSER || 'disperser-testnet.0g.ai:51001';
+  return { service: '0G DA', status: 'unknown', latencyMs: null,
+    note: 'gRPC — reachability shown on first save', endpoint };
+}
+
+async function pingCompute() {
+  if (!process.env.ZG_COMPUTE_API_KEY) {
+    return { service: '0G Compute', status: 'not_configured', latencyMs: null,
+      note: 'ZG_COMPUTE_API_KEY not set — anti-cheat is skipped' };
+  }
+  const start = Date.now();
+  const r = await fetch('https://router-api.0g.ai/v1/models', {
+    headers: { Authorization: `Bearer ${process.env.ZG_COMPUTE_API_KEY}` },
+    signal: AbortSignal.timeout(5000),
+  }).catch(() => null);
+  return { service: '0G Compute', status: r?.ok ? 'online' : 'degraded', latencyMs: Date.now() - start };
+}
+
 // ─── Utility: encode existing JSON profile → 0G Storage ──────────────────────
 // Used internally by profileController dual-write and IAP re-upload.
 

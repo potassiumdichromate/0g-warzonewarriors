@@ -240,6 +240,265 @@ Top-100 players ranked by coin balance, sourced from 0G DA-backed snapshots.
 
 ---
 
+## UX Endpoints — Making 0G Visible to Users
+
+These endpoints power the player-facing UI that shows the decentralized infrastructure in action.
+
+---
+
+### GET /dashboard
+All-in-one player profile card. One call loads the entire 0G profile screen.
+
+**Auth:** JWT required  
+**Rate limit:** 60/min
+
+**Response 200 — player has saves**
+```json
+{
+  "ok": true,
+  "wallet": "0x1234...",
+  "hasData": true,
+  "trustScore": 92,
+  "rank": 14,
+  "totalSaves": 25,
+  "daFinalizedCount": 23,
+  "computeCleanCount": 22,
+  "latestSave": {
+    "rootHash": "0xabc...",
+    "saveIndex": 24,
+    "fileSize": 2048,
+    "coinSnapshot": 47500,
+    "savedAt": "2025-01-01T12:00:00.000Z",
+    "source": "game_save"
+  },
+  "pipeline": {
+    "storage": { "status": "done",      "label": "Saved on 0G Storage",          "rootHash": "0xabc..." },
+    "chain":   { "status": "done",      "label": "Anchored on 0G Chain",          "txHash": "0xdef...", "explorerUrl": "https://chainscan.0g.ai/tx/0xdef..." },
+    "da":      { "status": "finalized", "label": "Finalised by 0G DA nodes",      "commitment": { "batchId": 42 } },
+    "compute": { "status": "validated", "label": "Passed anti-cheat (0G Compute)","verdict": "CLEAN" }
+  },
+  "onChain": {
+    "rootHash": "0xabc...",
+    "saveIndex": 24,
+    "timestamp": 1700000000
+  }
+}
+```
+
+**Response 200 — no saves yet**
+```json
+{
+  "ok": true,
+  "wallet": "0x1234...",
+  "hasData": false,
+  "message": "No saves found — play the game to see your 0G profile"
+}
+```
+
+**`trustScore`** — percentage of total saves that have been DA-finalized (0–100). Display as a badge or progress ring.
+
+---
+
+### GET /save/history
+Paginated save timeline. Shows every save with pipeline status badges.
+
+**Auth:** JWT required  
+**Rate limit:** 30/min
+
+**Query params**
+```
+page=1     (default: 1)
+limit=10   (default: 10, max: 50)
+```
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "wallet": "0x1234...",
+  "page": 1,
+  "limit": 10,
+  "total": 25,
+  "totalPages": 3,
+  "entries": [
+    {
+      "saveIndex": 24,
+      "rootHash": "0xabc...",
+      "fileSize": 2048,
+      "coinSnapshot": 47500,
+      "source": "game_save",
+      "savedAt": "2025-01-01T12:00:00.000Z",
+      "pipeline": {
+        "storage": { "status": "done",      "label": "Stored on 0G Storage" },
+        "chain":   { "status": "done",      "label": "Anchored on 0G Chain", "txHash": "0xdef...", "explorerUrl": "https://chainscan.0g.ai/tx/0xdef..." },
+        "da":      { "status": "finalized", "label": "Finalised by 0G DA nodes" },
+        "compute": { "status": "validated", "label": "Passed anti-cheat (0G Compute)", "verdict": "CLEAN" }
+      },
+      "fullyVerified": true
+    }
+  ]
+}
+```
+
+**Frontend use:** Render each `pipeline` step as a badge row. `fullyVerified: true` = show a "fully verified" checkmark on that save.
+
+---
+
+### GET /save/pipeline/:rootHash
+Live step-by-step pipeline progress for one save. Poll this after `POST /save/binary` to drive a progress tracker UI.
+
+**Auth:** None (rootHash is a public content address)  
+**Rate limit:** 60/min
+
+**Params:** `:rootHash` — the rootHash returned by `POST /save/binary`
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "rootHash": "0xabc...",
+  "wallet": "0x1234...",
+  "saveIndex": 24,
+  "progress": 75,
+  "allDone": false,
+  "savedAt": "2025-01-01T12:00:00.000Z",
+  "steps": [
+    {
+      "id": "storage",
+      "label": "0G Storage",
+      "detail": "Binary save uploaded and content-addressed",
+      "status": "done",
+      "value": "0xabc..."
+    },
+    {
+      "id": "chain",
+      "label": "0G Chain Anchor",
+      "detail": "rootHash written to PlayerSaveAnchor contract on 0G EVM",
+      "status": "done",
+      "value": "0xdef...",
+      "explorerUrl": "https://chainscan.0g.ai/tx/0xdef..."
+    },
+    {
+      "id": "da",
+      "label": "0G Data Availability",
+      "detail": "Commitment BLS-signed by 0G DA committee",
+      "status": "pending",
+      "value": null,
+      "finalizedAt": null
+    },
+    {
+      "id": "compute",
+      "label": "0G Compute Anti-Cheat",
+      "detail": "Save validated by TEE-attested AI inference",
+      "status": "skipped",
+      "value": null,
+      "confidence": null
+    }
+  ]
+}
+```
+
+**Frontend use:** Poll every 5–10 seconds after saving. Drive a 4-step progress bar with `steps[n].status`. Stop polling when `allDone: true`.
+
+**Step statuses:**
+| Status | Meaning |
+|---|---|
+| `done` | Complete |
+| `pending` | In progress — still waiting |
+| `finalized` | DA finality confirmed |
+| `validated` | Compute passed |
+| `failed` | Step failed |
+| `skipped` | Not triggered for this save |
+
+---
+
+### GET /proof/:rootHash
+Shareable public proof card for a specific save. Anyone can open this URL and independently verify the save is real.
+
+**Auth:** None — fully public  
+**Rate limit:** 30/min
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "proof": {
+    "rootHash": "0xabc...",
+    "wallet": "0x1234...",
+    "displayName": "DragonSlayer",
+    "saveIndex": 24,
+    "coinSnapshot": 47500,
+    "fileSize": 2048,
+    "checksum": "sha256hex...",
+    "savedAt": "2025-01-01T12:00:00.000Z",
+
+    "storage": {
+      "verified": true,
+      "rootHash": "0xabc...",
+      "note": "File is content-addressed on 0G Storage — rootHash is the Merkle root of the file"
+    },
+
+    "chain": {
+      "verified": true,
+      "txHash": "0xdef...",
+      "block": 987654,
+      "explorerUrl": "https://chainscan.0g.ai/tx/0xdef...",
+      "contractUrl": "https://chainscan.0g.ai/address/0x...",
+      "onChainRecord": { "rootHash": "0xabc...", "saveIndex": 24, "timestamp": 1700000000 }
+    },
+
+    "da": {
+      "verified": true,
+      "status": "finalized",
+      "commitment": { "batchId": 42, "blobIndex": 3, "finalizedAt": "2025-01-01T12:02:00.000Z" },
+      "note": "This commitment was BLS-signed by >2/3 of 0G DA nodes"
+    },
+
+    "compute": {
+      "verified": true,
+      "status": "validated",
+      "verdict": "CLEAN",
+      "confidence": 0.95,
+      "flags": [],
+      "teeVerified": false
+    },
+
+    "allVerified": true
+  }
+}
+```
+
+**Frontend use:** Link to `/proof/:rootHash` from the player's score or leaderboard entry as a "Verify on 0G" button. Anyone — judges, other players, auditors — can open this without logging in.
+
+---
+
+### GET /network/status
+Live health check for all four 0G services. Use this to show a status banner in the UI so players know if a delay is from the network, not the game.
+
+**Auth:** None  
+**Rate limit:** 20/min
+
+**Response 200**
+```json
+{
+  "ok": true,
+  "allOnline": true,
+  "checkedAt": "2025-01-01T12:00:00.000Z",
+  "services": {
+    "storage": { "service": "0G Storage", "status": "online",  "latencyMs": 143, "endpoint": "https://indexer-storage-turbo.0g.ai" },
+    "chain":   { "service": "0G Chain",   "status": "online",  "latencyMs": 210, "blockNumber": 1234567, "endpoint": "https://evmrpc.0g.ai" },
+    "da":      { "service": "0G DA",      "status": "unknown", "latencyMs": null, "note": "gRPC — reachability shown on first save" },
+    "compute": { "service": "0G Compute", "status": "online",  "latencyMs": 380 }
+  }
+}
+```
+
+**Service statuses:** `online` | `degraded` | `offline` | `unknown` | `not_configured`
+
+**Frontend use:** Show a small status strip at the top of the game UI — green dot when `allOnline: true`, yellow/red with individual service names when degraded.
+
+---
+
 ## Legacy JSON Endpoints (unchanged)
 
 These endpoints are fully backward-compatible with existing Unity builds.

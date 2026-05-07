@@ -17,6 +17,11 @@ const {
   getSaveMetadata,
   verifySave,
   getDecentralizedLeaderboard,
+  getDashboard,
+  getSaveHistory,
+  getSavePipeline,
+  getProof,
+  getNetworkStatus,
 } = require('../controllers/zgController');
 
 // Raw binary body parser — applied only to the binary save route
@@ -28,6 +33,11 @@ const loadBinaryLimiter   = rateLimiter({ windowMs: 60_000, max: 30,  message: '
 const metadataLimiter     = rateLimiter({ windowMs: 60_000, max: 60,  message: 'Metadata rate limit exceeded' });
 const verifyLimiter       = rateLimiter({ windowMs: 60_000, max: 20,  message: 'Verify rate limit exceeded — max 20 verifications/min' });
 const leaderboardLimiter  = rateLimiter({ windowMs: 60_000, max: 30,  message: 'Leaderboard rate limit exceeded' });
+const dashboardLimiter    = rateLimiter({ windowMs: 60_000, max: 60,  message: 'Dashboard rate limit exceeded' });
+const historyLimiter      = rateLimiter({ windowMs: 60_000, max: 30,  message: 'History rate limit exceeded' });
+const pipelineLimiter     = rateLimiter({ windowMs: 60_000, max: 60,  message: 'Pipeline rate limit exceeded' });
+const proofLimiter        = rateLimiter({ windowMs: 60_000, max: 30,  message: 'Proof rate limit exceeded' });
+const networkLimiter      = rateLimiter({ windowMs: 60_000, max: 20,  message: 'Network status rate limit exceeded' });
 
 
 // ── 0G Storage — binary save / load ──────────────────────────────────────────
@@ -70,6 +80,31 @@ router.get('/verify', verifyLimiter, verifySave);
 //   Backed by coinSnapshot stored in MongoDB, sourced from 0G DA.
 //   Public — leaderboards are always public.
 router.get('/leaderboard/decentralized', leaderboardLimiter, getDecentralizedLeaderboard);
+
+// ── 0G UX endpoints — makes the decentralized layer visible to users ──────────
+
+// GET /dashboard
+//   All-in-one player profile card. One call for the entire 0G profile screen.
+//   Returns: trust score, rank, save stats, latest pipeline status, on-chain record.
+router.get('/dashboard', dashboardLimiter, verifyUser, getDashboard);
+
+// GET /save/history?page=1&limit=10
+//   Paginated save timeline — every save with its pipeline status badges.
+router.get('/save/history', historyLimiter, verifyUser, getSaveHistory);
+
+// GET /save/pipeline/:rootHash
+//   Live step-by-step pipeline progress for one save (poll after POST /save/binary).
+//   Public — rootHash is already a public content address.
+router.get('/save/pipeline/:rootHash', pipelineLimiter, getSavePipeline);
+
+// GET /proof/:rootHash
+//   Shareable public proof card — anyone can verify this save is real.
+router.get('/proof/:rootHash', proofLimiter, getProof);
+
+// GET /network/status
+//   Live health of all 0G services (Storage, Chain, DA, Compute).
+//   Frontend shows a status banner so users understand delays.
+router.get('/network/status', networkLimiter, getNetworkStatus);
 
 // ── Legacy JSON API (unchanged — backward compat for existing Unity builds) ──
 router.get('/', getProfile);

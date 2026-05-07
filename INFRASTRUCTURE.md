@@ -305,12 +305,29 @@ MONGOOSE_DEBUG_LOGS=false # set true to log every mongo command + duration
 
 ## Rate Limits (per IP)
 
-| Endpoint | Limit |
-|---|---|
-| `POST /save/binary` | 10 req/min |
-| `GET /load/binary` | 30 req/min |
-| `GET /save/metadata` | 60 req/min |
-| `GET /verify` | 20 req/min |
-| `GET /leaderboard/decentralized` | 30 req/min |
+| Endpoint | Auth | Limit |
+|---|---|---|
+| `POST /save/binary` | JWT | 10 req/min |
+| `GET /load/binary` | JWT | 30 req/min |
+| `GET /save/metadata` | Public | 60 req/min |
+| `GET /verify` | Public | 20 req/min |
+| `GET /leaderboard/decentralized` | Public | 30 req/min |
+| `GET /dashboard` | JWT | 60 req/min |
+| `GET /save/history` | JWT | 30 req/min |
+| `GET /save/pipeline/:rootHash` | Public | 60 req/min |
+| `GET /proof/:rootHash` | Public | 30 req/min |
+| `GET /network/status` | Public | 20 req/min |
 
 Rate limiter is in-memory (`routes/middleware/rateLimiter.js`). For multi-instance deployments, replace with Redis-backed rate limiting.
+
+---
+
+## UX Endpoints — What Each One Is For
+
+| Endpoint | Purpose | When to call |
+|---|---|---|
+| `GET /dashboard` | Full player 0G profile in one call | Profile screen open |
+| `GET /save/history` | Paginated save timeline with pipeline badges | "My saves" screen |
+| `GET /save/pipeline/:rootHash` | Step-by-step progress for one save | Poll every 5–10s after saving |
+| `GET /proof/:rootHash` | Shareable public proof card | "Verify on 0G" button |
+| `GET /network/status` | Health of all 4 0G services | Status banner on app load |
