@@ -6,7 +6,7 @@
  *
  * Required env vars:
  *   ZG_RPC_URL        — 0G chain RPC  (default: https://evmrpc.0g.ai)
- *   ZG_CHAIN_ID       — 0G chain ID   (default: 16600)
+ *   ZG_CHAIN_ID       — 0G chain ID   (default: 16661 = 0G Mainnet)
  *   ZG_PRIVATE_KEY    — deployer wallet private key (fund with 0G tokens first)
  *
  * After deployment, add the printed address to your .env:
@@ -19,7 +19,7 @@ require('dotenv').config();
 const { ethers } = require('ethers-v6');
 
 const ZG_RPC_URL  = process.env.ZG_RPC_URL  || 'https://evmrpc.0g.ai';
-const ZG_CHAIN_ID = Number(process.env.ZG_CHAIN_ID || 16600);
+const ZG_CHAIN_ID = Number(process.env.ZG_CHAIN_ID || 16661); // 16661 = 0G Mainnet
 
 function getPrivateKey() {
   const k = process.env.ZG_PRIVATE_KEY
@@ -79,7 +79,7 @@ async function main() {
   console.log('  RPC:    ', ZG_RPC_URL);
   console.log('  ChainId:', ZG_CHAIN_ID);
 
-  const provider = new ethers.JsonRpcProvider(ZG_RPC_URL, { chainId: ZG_CHAIN_ID, name: '0g' });
+  const provider = new ethers.JsonRpcProvider(ZG_RPC_URL, { chainId: ZG_CHAIN_ID, name: '0g-mainnet' });
   const signer   = new ethers.Wallet(getPrivateKey(), provider);
 
   const balance = await provider.getBalance(signer.address);

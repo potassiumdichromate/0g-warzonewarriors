@@ -524,16 +524,6 @@ Legacy leaderboard (MongoDB-backed).
 ### GET /dailyQuests
 Daily quest list.
 
-### POST /iap/purchase
-**Auth:** JWT required  
-In-app purchase via Somnia IAP contract.
-
-### GET /iap/purchase-status
-**Auth:** JWT required  
-Check purchase transaction status.
-
-### GET /iap/pricing
-Coin and gem pack prices.
 
 ---
 
@@ -600,7 +590,8 @@ The JWT is issued at login and passed into the game iframe via `postMessage`. Th
 
 | Network | Typical finality |
 |---|---|
-| 0G DA testnet | 60–120 seconds |
-| 0G DA mainnet | TBD (check 0G docs) |
+| 0G DA (current endpoint) | 60–240 seconds |
 
-The backend polls every 5 seconds up to `ZG_DA_POLL_TIMEOUT_MS` (default: 120,000ms). The HTTP save response is never blocked by DA — it completes in ~1–3 seconds. Use `GET /save/metadata` to poll `daStatus` after saving.
+**Disperser:** `disperser-testnet.0g.ai:51001` is the production endpoint used by all 0G-integrated backends currently deployed. The 0G DA mainnet disperser does not have a public gRPC endpoint yet. Update `ZG_DA_DISPERSER` in `.env` when the mainnet endpoint ships — no code changes required.
+
+The backend polls every 5 seconds up to `ZG_DA_POLL_TIMEOUT_MS` (default: 240,000ms). The HTTP save response is never blocked by DA — it completes in ~1–3 seconds. Use `GET /save/metadata` to poll `daStatus` after saving.

@@ -17,9 +17,12 @@ const path  = require('path');
 const grpc  = require('@grpc/grpc-js');
 const protoLoader = require('@grpc/proto-loader');
 
-const DA_DISPERSER    = process.env.ZG_DA_DISPERSER     || 'disperser-testnet.0g.ai:51001';
-const DA_USE_TLS      = (process.env.ZG_DA_TLS || 'false').toLowerCase() === 'true';
-const POLL_TIMEOUT_MS = Number(process.env.ZG_DA_POLL_TIMEOUT_MS  || 120_000);
+const DA_DISPERSER     = process.env.ZG_DA_DISPERSER      || 'disperser-testnet.0g.ai:51001';
+// Auto-enable TLS for testnet endpoints — they require it. Override with ZG_DA_TLS=false.
+const DA_USE_TLS       = process.env.ZG_DA_TLS !== undefined
+  ? process.env.ZG_DA_TLS.toLowerCase() === 'true'
+  : DA_DISPERSER.includes('testnet') || DA_DISPERSER.includes(':51001');
+const POLL_TIMEOUT_MS  = Number(process.env.ZG_DA_POLL_TIMEOUT_MS  || 240_000);
 const POLL_INTERVAL_MS = Number(process.env.ZG_DA_POLL_INTERVAL_MS || 5_000);
 
 const BLOB_STATUS = { UNKNOWN: 0, PROCESSING: 1, FAILED: 2, FINALIZED: 3, INSUFFICIENT_SIGNATURES: 4 };
@@ -33,7 +36,7 @@ function getClient() {
   const packageDef = protoLoader.loadSync(protoPath, {
     keepCase: true,
     longs: String,
-    enums: String,
+    enums: Number,  // must be Number — status comparisons use numeric constants
     defaults: true,
     oneofs: true,
   });

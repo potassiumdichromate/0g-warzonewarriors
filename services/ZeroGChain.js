@@ -13,7 +13,7 @@
  *
  * 0G EVM chain:
  *   RPC:     https://evmrpc.0g.ai   (ZG_RPC_URL)
- *   ChainId: 16600                   (ZG_CHAIN_ID)
+ *   ChainId: 16661                   (0G Mainnet)
  *   Explorer:https://chainscan.0g.ai
  *
  * Contract to deploy: contracts/PlayerSaveAnchor.sol
@@ -23,7 +23,7 @@
 const { ethers } = require('ethers-v6');
 
 const ZG_RPC_URL    = process.env.ZG_RPC_URL    || 'https://evmrpc.0g.ai';
-const ZG_CHAIN_ID   = Number(process.env.ZG_CHAIN_ID || 16600);
+const ZG_CHAIN_ID   = Number(process.env.ZG_CHAIN_ID || 16661); // 16661 = 0G Mainnet
 const ANCHOR_ADDR   = process.env.ZG_ANCHOR_CONTRACT_ADDRESS || '';
 
 // Minimal ABI — only what the backend calls
@@ -50,7 +50,7 @@ function getContract() {
 
   const provider = new ethers.JsonRpcProvider(ZG_RPC_URL, {
     chainId: ZG_CHAIN_ID,
-    name: '0g',
+    name: '0g-mainnet',
   });
   const signer = new ethers.Wallet(getPrivateKey(), provider);
   _contract = new ethers.Contract(ANCHOR_ADDR, ANCHOR_ABI, signer);
