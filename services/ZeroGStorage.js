@@ -29,11 +29,15 @@ let _signer     = null;
 
 function getSigner() {
   if (_signer) return _signer;
-  const key = process.env.ZG_PRIVATE_KEY
+  // Prefer ZG_STORAGE_PRIVATE_KEY (dedicated storage key).
+  // Falls back to ZG_PRIVATE_KEY for backward compat with single-key deployments.
+  // Best practice: set both ZG_STORAGE_PRIVATE_KEY and ZG_CHAIN_PRIVATE_KEY to separate wallets.
+  const key = process.env.ZG_STORAGE_PRIVATE_KEY
+    || process.env.ZG_PRIVATE_KEY
     || process.env.GAME_OWNER_PRIVATE_KEY
     || process.env.OWNER_PRIVATE_KEY
     || '';
-  if (!key) throw new Error('ZG_PRIVATE_KEY is not set');
+  if (!key) throw new Error('ZG_STORAGE_PRIVATE_KEY (or ZG_PRIVATE_KEY) is not set');
   const pk       = key.trim().startsWith('0x') ? key.trim() : `0x${key.trim()}`;
   const provider = new ethers.JsonRpcProvider(ZG_RPC_URL, { chainId: ZG_CHAIN_ID, name: '0g-mainnet' });
   _signer = new ethers.Wallet(pk, provider);

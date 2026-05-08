@@ -34,11 +34,15 @@ const ANCHOR_ABI = [
 ];
 
 function getPrivateKey() {
-  const k = process.env.ZG_PRIVATE_KEY
+  // Prefer ZG_CHAIN_PRIVATE_KEY (dedicated chain anchoring key).
+  // Falls back to ZG_PRIVATE_KEY for backward compat with single-key deployments.
+  // Best practice: set both ZG_STORAGE_PRIVATE_KEY and ZG_CHAIN_PRIVATE_KEY to separate wallets.
+  const k = process.env.ZG_CHAIN_PRIVATE_KEY
+    || process.env.ZG_PRIVATE_KEY
     || process.env.GAME_OWNER_PRIVATE_KEY
     || process.env.OWNER_PRIVATE_KEY
     || '';
-  if (!k) throw new Error('ZG_PRIVATE_KEY not set — needed for 0G chain anchoring');
+  if (!k) throw new Error('ZG_CHAIN_PRIVATE_KEY (or ZG_PRIVATE_KEY) not set — needed for 0G chain anchoring');
   return k.trim().startsWith('0x') ? k.trim() : `0x${k.trim()}`;
 }
 

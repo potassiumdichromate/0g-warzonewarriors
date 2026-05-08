@@ -515,8 +515,12 @@ function daLabel(status) {
            failed: 'DA commitment failed', skipped: 'DA skipped' }[status] || status;
 }
 function computeLabel(status) {
-  return { skipped: 'Anti-cheat not run', pending: 'Anti-cheat pending…',
-           validated: 'Passed anti-cheat (0G Compute)', rejected: 'Flagged by anti-cheat' }[status] || status;
+  return {
+    skipped:   'Anti-cheat not triggered',
+    pending:   'Anti-cheat pending…',
+    validated: 'Passed AI anti-cheat (0G Compute)',
+    rejected:  'Flagged by AI anti-cheat',
+  }[status] || status;
 }
 
 // ─── GET /warzone/save/history ────────────────────────────────────────────────
@@ -610,12 +614,15 @@ exports.getSavePipeline = async (req, res) => {
         finalizedAt: record.daCommitment?.finalizedAt || null,
       },
       {
-        id:     'compute',
-        label:  '0G Compute Anti-Cheat',
-        detail: 'Save validated by TEE-attested AI inference',
-        status: record.computeStatus,
-        value:  record.computeValidation?.verdict || null,
+        id:         'compute',
+        label:      '0G Compute Anti-Cheat',
+        detail:     record.computeValidation?.teeVerified
+                      ? 'AI verdict cryptographically attested (TEE-verified)'
+                      : 'AI heuristic check — probabilistic, not cryptographic',
+        status:     record.computeStatus,
+        value:      record.computeValidation?.verdict || null,
         confidence: record.computeValidation?.confidence || null,
+        teeVerified: record.computeValidation?.teeVerified || false,
       },
     ];
 

@@ -5,7 +5,9 @@ const dotenv = require('dotenv');
 // Ensure env is loaded before importing modules that read it
 dotenv.config();
 const profileRoutes = require('./routes/profileRoutes');
+const authRoutes = require('./routes/authRoutes');
 const intraverseTestRoutes = require('./routes/intraverseTestRoutes');
+const { metricsMiddleware, metricsHandler } = require('./middleware/metrics');
 const app = express();
 const SLOW_REQUEST_MS = Number(process.env.SLOW_REQUEST_MS || 2000);
 const SLOW_MONGO_MS = Number(process.env.SLOW_MONGO_MS || 200);
@@ -27,32 +29,31 @@ if (trustProxyEnv === 'true') {
 
 // ── Chain config summary at startup ──────────────────────────────────────────
 //
-//  Somnia chain  — IAP contract + game registration (registerUser, startGameFor)
-//  0G chain      — PlayerSaveAnchor contract (rootHash anchoring only)
-//  0G Storage    — binary player save files
-//  0G DA         — leaderboard + save commitments
-//  0G Compute    — TEE anti-cheat (optional)
+//  0G EVM (chainId 16661) — PlayerSaveAnchor contract (rootHash anchoring)
+//  0G Storage             — binary player save files (content-addressed)
+//  0G DA                  — leaderboard + save commitments (BLS finality)
+//  0G Compute             — TEE anti-cheat AI inference (optional)
 //
 const ZG_ENABLED = process.env.ZG_ENABLED !== 'false';
+const zgStorageKey = process.env.ZG_STORAGE_PRIVATE_KEY || process.env.ZG_PRIVATE_KEY;
+const zgChainKey   = process.env.ZG_CHAIN_PRIVATE_KEY   || process.env.ZG_PRIVATE_KEY;
 const chainSummary = {
-  // Somnia — unchanged contracts
-  'Somnia RPC':           process.env.SOMNIA_RPC_URL   || 'https://api.infra.mainnet.somnia.network',
-  'Game Contract':        process.env.GAME_CONTRACT_ADDRESS || '(NOT SET)',
-  'IAP Contract':         process.env.IAP_CONTRACT_ADDRESS  || '(NOT SET)',
-  // 0G chain — root hash anchor only
+  // 0G EVM — anchor contract
   '0G Chain RPC':         process.env.ZG_RPC_URL        || 'https://evmrpc.0g.ai',
+  '0G Chain ID':          process.env.ZG_CHAIN_ID       || '16661',
   '0G Anchor Contract':   process.env.ZG_ANCHOR_CONTRACT_ADDRESS || '(NOT SET — run: node scripts/deployAnchor.js)',
-  '0G Wallet Key':        process.env.ZG_PRIVATE_KEY    ? '*** SET ***' : '(NOT SET)',
+  '0G Chain Key':         zgChainKey   ? '*** SET ***' : '(NOT SET — ZG_CHAIN_PRIVATE_KEY or ZG_PRIVATE_KEY)',
   // 0G Storage
   '0G Storage Indexer':   process.env.ZG_INDEXER_RPC    || 'https://indexer-storage-turbo.0g.ai',
+  '0G Storage Key':       zgStorageKey ? '*** SET ***' : '(NOT SET — ZG_STORAGE_PRIVATE_KEY or ZG_PRIVATE_KEY)',
   // 0G DA
   '0G DA Disperser':      process.env.ZG_DA_DISPERSER   || 'disperser-testnet.0g.ai:51001',
   // 0G Compute
   '0G Compute':           process.env.ZG_COMPUTE_API_KEY ? '*** SET ***' : '(optional — not set)',
   '0G Stack Enabled':     String(ZG_ENABLED),
 };
-console.log('[chain] Dual-chain config:');
-Object.entries(chainSummary).forEach(([k, v]) => console.log(`  ${k.padEnd(24)} ${v}`));
+console.log('[0G] Chain config:');
+Object.entries(chainSummary).forEach(([k, v]) => console.log(`  ${k.padEnd(26)} ${v}`));
 
 const allowedOrigins = [
   'https://www.warzonewarriors.xyz',
@@ -118,6 +119,11 @@ app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// Prometheus metrics — mount before routes so all requests are measured.
+// Scrape endpoint: GET /metrics  (restrict to internal/monitoring network in production)
+app.use(metricsMiddleware);
+app.get('/metrics', metricsHandler);
+
 // Request latency logging to identify slow APIs
 app.use((req, res, next) => {
   const startedAt = process.hrtime.bigint();
@@ -140,6 +146,7 @@ app.use((req, res, next) => {
 });
 
 app.use('/warzone/intraverse', intraverseTestRoutes);
+app.use('/warzone/auth', authRoutes);
 app.use('/warzone', profileRoutes);
 
 

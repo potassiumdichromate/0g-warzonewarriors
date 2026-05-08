@@ -2,12 +2,13 @@
  * Deploy PlayerSaveAnchor to 0G EVM chain.
  *
  * Usage:
- *   node scripts/deployAnchor.js
+ *   ANCHOR_BYTECODE=0x<bytecode> node scripts/deployAnchor.js
  *
  * Required env vars:
- *   ZG_RPC_URL        — 0G chain RPC  (default: https://evmrpc.0g.ai)
- *   ZG_CHAIN_ID       — 0G chain ID   (default: 16661 = 0G Mainnet)
- *   ZG_PRIVATE_KEY    — deployer wallet private key (fund with 0G tokens first)
+ *   ZG_RPC_URL              — 0G chain RPC  (default: https://evmrpc.0g.ai)
+ *   ZG_CHAIN_ID             — 0G chain ID   (default: 16661 = 0G Mainnet)
+ *   ZG_CHAIN_PRIVATE_KEY    — deployer wallet private key (fund with 0G tokens first)
+ *   (or ZG_PRIVATE_KEY as fallback if using a single key)
  *
  * After deployment, add the printed address to your .env:
  *   ZG_ANCHOR_CONTRACT_ADDRESS=0x...
@@ -22,12 +23,15 @@ const ZG_RPC_URL  = process.env.ZG_RPC_URL  || 'https://evmrpc.0g.ai';
 const ZG_CHAIN_ID = Number(process.env.ZG_CHAIN_ID || 16661); // 16661 = 0G Mainnet
 
 function getPrivateKey() {
-  const k = process.env.ZG_PRIVATE_KEY
+  // Prefer ZG_CHAIN_PRIVATE_KEY (dedicated chain key). Falls back to ZG_PRIVATE_KEY.
+  // The deployer wallet becomes the immutable backendOperator in PlayerSaveAnchor.sol.
+  const k = process.env.ZG_CHAIN_PRIVATE_KEY
+    || process.env.ZG_PRIVATE_KEY
     || process.env.GAME_OWNER_PRIVATE_KEY
     || process.env.OWNER_PRIVATE_KEY
     || '';
   if (!k) {
-    console.error('ERROR: ZG_PRIVATE_KEY not set');
+    console.error('ERROR: ZG_CHAIN_PRIVATE_KEY (or ZG_PRIVATE_KEY) not set');
     process.exit(1);
   }
   return k.startsWith('0x') ? k : `0x${k}`;

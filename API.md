@@ -13,8 +13,60 @@ JWT is issued by `POST /warzone/login`. The wallet address decoded from the JWT 
 
 ## Authentication
 
-### POST /login
-Issue a JWT for a wallet address.
+There are two login flows. Use **SIWE** for new integrations. The legacy flow still works for backward compat.
+
+### SIWE Flow (Sign-In with Ethereum) — Recommended
+
+Proves wallet ownership via a signed message. Zero on-chain transaction or gas fee required.
+
+**Step 1 — GET /auth/nonce?wallet=0x...**
+
+Rate limit: 10/min
+
+```json
+{
+  "wallet": "0x1234...",
+  "nonce": "a3f9bc1d...",
+  "issuedAt": "2025-01-01T12:00:00.000Z",
+  "message": "Sign in to Warzone Warriors\n\nWallet: 0x1234...\nNonce: a3f9bc1d...\nIssued At: 2025-01-01T12:00:00.000Z\n\nSigning this message proves ownership of your wallet.\nIt will not trigger a blockchain transaction or cost gas fees.",
+  "expiresIn": 300
+}
+```
+
+**Step 2 — Sign `message` with the wallet** (client-side, no network call)
+```js
+// ethers.js v6
+const signature = await signer.signMessage(response.message);
+```
+
+**Step 3 — POST /auth/login**
+
+Rate limit: 5/min
+
+**Request**
+```json
+{ "wallet": "0x1234...", "nonce": "a3f9bc1d...", "signature": "0xsig..." }
+```
+
+**Response 200**
+```json
+{
+  "token": "eyJ...",
+  "wallet": "0x1234...",
+  "expiresIn": 604800,
+  "tokenType": "Bearer"
+}
+```
+
+Use the token as: `Authorization: Bearer <token>`
+
+**Nonce security:** Single-use, deleted immediately after a successful login. Expires in 5 minutes if unused.
+
+---
+
+### Legacy Flow — POST /login
+
+Still supported for backward compatibility with existing builds.
 
 **Request**
 ```json
@@ -26,8 +78,28 @@ Issue a JWT for a wallet address.
 {
   "success": true,
   "token": "eyJ...",
-  "walletAddress": "0x1234..."
+  "user": { "walletAddress": "0x1234...", "isNewUser": false }
 }
+```
+
+> **Security note:** The legacy login does not verify wallet ownership — it issues a JWT for any wallet address submitted. For new integrations, use the SIWE flow above.
+
+---
+
+### React Native Iframe Session
+
+The web app / login page calls the SIWE flow once. The JWT is passed into the game iframe via `postMessage`. The game includes `Authorization: Bearer <token>` in every request. **Zero wallet popups during gameplay.**
+
+```js
+// Web app (after SIWE login)
+gameIframe.contentWindow.postMessage({ type: 'AUTH_TOKEN', token }, '*');
+
+// Game iframe (React Native WebView or browser iframe)
+window.addEventListener('message', (e) => {
+  if (e.data.type === 'AUTH_TOKEN') {
+    sessionStorage.setItem('jwt', e.data.token);
+  }
+});
 ```
 
 ---
@@ -189,7 +261,7 @@ wallet=0x1234...   (required)
     },
     "compute": {
       "passed": true,
-      "detail": "Compute verdict: CLEAN (confidence: 0.95)"
+      "detail": "AI heuristic: CLEAN (confidence: 0.95) — probabilistic, not cryptographic"
     }
   },
   "allPassed": true,
@@ -198,12 +270,14 @@ wallet=0x1234...   (required)
 ```
 
 **What each layer means:**
-| Layer | Passes when |
-|---|---|
-| `db` | A `PlayerSaveRecord` exists in MongoDB with matching rootHash |
-| `da` | `daStatus === finalized` — 0G DA nodes signed the commitment |
-| `checksum` | File re-downloaded from 0G Storage and SHA-256 matches stored checksum |
-| `compute` | Compute verdict is `CLEAN` or `validated` with no rejected flags |
+| Layer | Guarantee | Passes when |
+|---|---|---|
+| `db` | Soft (index) | A `PlayerSaveRecord` exists in MongoDB with matching rootHash |
+| `da` | **Cryptographic** | `daStatus === finalized` — BLS-signed by >2/3 of 0G DA committee |
+| `checksum` | **Cryptographic** | File re-downloaded from 0G Storage, SHA-256 + Merkle proof match |
+| `compute` | **Probabilistic** | AI verdict `CLEAN` — heuristic pattern check, not a cryptographic proof |
+
+`allPassed: true` is the strongest available signal. Layers 2 (`da`) and 3 (`checksum`) are cryptographically auditable by anyone. Layer 4 (`compute`) is a heuristic filter — a CLEAN verdict means no anomaly patterns were detected, not a guarantee.
 
 ---
 
@@ -389,10 +463,11 @@ Live step-by-step pipeline progress for one save. Poll this after `POST /save/bi
     {
       "id": "compute",
       "label": "0G Compute Anti-Cheat",
-      "detail": "Save validated by TEE-attested AI inference",
+      "detail": "AI heuristic check — probabilistic, not cryptographic",
       "status": "skipped",
       "value": null,
-      "confidence": null
+      "confidence": null,
+      "teeVerified": false
     }
   ]
 }
@@ -460,13 +535,20 @@ Shareable public proof card for a specific save. Anyone can open this URL and in
       "verdict": "CLEAN",
       "confidence": 0.95,
       "flags": [],
-      "teeVerified": false
+      "teeVerified": false,
+      "note": "AI heuristic — no anomaly patterns detected. teeVerified:false means the AI verdict is valid but not cryptographically attested for this request."
     },
 
     "allVerified": true
   }
 }
 ```
+
+**`teeVerified` field in compute:**
+| Value | Meaning | Display suggestion |
+|---|---|---|
+| `true` | TEE attestation confirmed — verdict is cryptographically signed | "AI-verified (TEE attested)" |
+| `false` | No TEE attestation for this request — verdict is an AI judgment | "AI-checked (heuristic)" |
 
 **Frontend use:** Link to `/proof/:rootHash` from the player's score or leaderboard entry as a "Verify on 0G" button. Anyone — judges, other players, auditors — can open this without logging in.
 
@@ -583,6 +665,31 @@ PlayerState state = MessagePackSerializer.Deserialize<PlayerState>(rawBytes);
 
 ### React Native (iframe session)
 The JWT is issued at login and passed into the game iframe via `postMessage`. The game includes it in every `Authorization: Bearer <token>` header. No wallet popup or signing prompt is required during gameplay.
+
+---
+
+## Observability — GET /metrics
+
+Prometheus metrics endpoint (prom-client format). Scrape with Prometheus every 15s.
+
+**Auth:** None — restrict to internal network in production (nginx/firewall)
+
+**Metrics exposed:**
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `http_requests_total` | Counter | method, path, status | All HTTP requests |
+| `http_request_duration_seconds` | Histogram | method, path, status | Latency distribution |
+| `zg_storage_uploads_total` | Counter | result (success/failure) | 0G Storage upload attempts |
+| `zg_storage_upload_duration_ms` | Histogram | — | Upload time distribution |
+| `zg_da_dispersals_total` | Counter | status (finalized/failed/timeout) | DA dispersal outcomes |
+| `zg_da_finality_duration_ms` | Histogram | — | Time to DA finality |
+| `zg_anchor_txs_total` | Counter | result (success/failure) | Chain anchor transactions |
+| `zg_compute_validations_total` | Counter | verdict (CLEAN/FLAGGED/skipped) | Anti-cheat results |
+
+**Optional:** Requires `npm install prom-client`. Returns 503 if not installed.
+
+**Grafana:** Provision `prometheus.yml` as a datasource and import the included dashboard config.
 
 ---
 

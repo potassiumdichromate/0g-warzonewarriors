@@ -35,7 +35,7 @@ React Native Game (iframe session, JWT auth)
        │   (BLS-signed by >2/3 DA nodes)               (finality in ~60–240s)
        │
        └── 0G Compute ─────────────────────────────▶  Anti-cheat validation
-           (TEE-attested AI inference)                  (coin delta heuristics)
+           (AI heuristic; TEE when available)           (coin delta / save patterns)
 ```
 
 ---
@@ -46,11 +46,12 @@ Everything runs on 0G infrastructure. There is no secondary chain.
 
 | Layer | Role | Config var |
 |---|---|---|
-| **0G EVM Mainnet** (chainId 16661) | `PlayerSaveAnchor.sol` — rootHash anchoring | `ZG_RPC_URL`, `ZG_ANCHOR_CONTRACT_ADDRESS`, `ZG_PRIVATE_KEY` |
-| **0G Storage** | Binary player save files (content-addressed) | `ZG_INDEXER_RPC` |
+| **0G EVM Mainnet** (chainId 16661) | `PlayerSaveAnchor.sol` — rootHash anchoring | `ZG_RPC_URL`, `ZG_ANCHOR_CONTRACT_ADDRESS`, `ZG_CHAIN_PRIVATE_KEY` |
+| **0G Storage** | Binary player save files (content-addressed) | `ZG_INDEXER_RPC`, `ZG_STORAGE_PRIVATE_KEY` |
 | **0G DA** | Leaderboard commitments, save proofs (BLS finality) | `ZG_DA_DISPERSER` |
-| **0G Compute** | TEE anti-cheat AI inference | `ZG_COMPUTE_API_KEY` |
+| **0G Compute** | AI heuristic anti-cheat (TEE attestation when available) | `ZG_COMPUTE_API_KEY` |
 | **MongoDB** | Metadata index only — pointers to 0G, never game data | `MONGO_URI` |
+| **Redis** (optional) | Shared rate limiting across instances | `REDIS_URL` |
 
 ---
 
@@ -168,7 +169,7 @@ publishCommitment(payload, wallet)
 
 ### 4. 0G Compute — Anti-Cheat
 
-Save validation is sent to 0G Compute's TEE-attested AI router.
+Save metadata is sent to the 0G Compute router for AI heuristic validation.
 
 **Endpoint:** `https://router-api.0g.ai/v1/chat/completions`  
 **Dashboard / top-up:** `https://pc.0g.ai`
@@ -181,12 +182,22 @@ Save validation is sent to 0G Compute's TEE-attested AI router.
 **Binding check (replay-attack prevention):**
 The system prompt instructs the model to echo back the `rootHash`. Backend verifies `parsed.rootHash === rootHash` — a valid result from a different save cannot be replayed.
 
-**Honest limitations:**
-- `teeVerified: false` is the common path — TEE attestation is requested but not guaranteed.
-- This is a heuristic layer, not cryptographic proof. Use as a first-pass filter.
+**TEE attestation — two-tier model:**
+
+| `teeVerified` | What it means | How common |
+|---|---|---|
+| `true` | Inference ran inside a verified TEE; verdict is cryptographically signed by an on-chain-attested key — cannot be forged | Uncommon today |
+| `false` | Inference ran on 0G Compute but no TEE attestation was returned for this request; verdict is a valid AI judgment but not cryptographically guaranteed | **Common path** |
+
+We request `verify_tee: true` on every call — attestation depends on provider availability.
+
+**Positioning:**
+- This is a **probabilistic heuristic filter**, not a cryptographic proof.
+- Strong deterrent: raises cost and friction for cheaters, catches obvious patterns.
+- Pair with the on-chain anchor (immutable) and DA proof (BLS-finalized) for the tamper-evident guarantees.
 - Skipped entirely when `ZG_COMPUTE_API_KEY` is not set.
 
-**Trigger heuristic:** Only fires when `coinDelta > 100` or `saveIndex` jumps > 1.
+**Trigger:** Only fires when `coinDelta > 5000`, save frequency is abnormal, or `saveIndex` rollback is detected.
 
 - File: `services/ZeroGCompute.js`
 
@@ -212,6 +223,42 @@ PlayerSaveRecord {
 ```
 
 The actual game binary lives on 0G Storage, addressed by `rootHash`. If MongoDB is wiped, saves can be recovered from 0G Storage — rootHash is the canonical identifier.
+
+---
+
+## Authentication System (SIWE)
+
+Login proves wallet ownership via a signed message — no transaction, no gas, no MetaMask popups during gameplay.
+
+```
+GET /auth/nonce?wallet=0x...
+        │
+        └── Returns { nonce, message, issuedAt }
+                │
+                ▼  (client signs message — zero network call)
+        ethers.signMessage(message) → signature
+                │
+                ▼
+POST /auth/login { wallet, signature, nonce }
+        │
+        ├── Look up nonce in MongoDB (TTL: 5 min)
+        ├── Delete nonce immediately (single-use)
+        ├── ethers.verifyMessage(message, signature) → recovered address
+        ├── recovered === wallet → JWT issued
+        └── Returns { token, wallet, expiresIn: 604800 }
+```
+
+**Nonce model:** `models/AuthNonce.js` — MongoDB TTL index auto-expires nonces after 5 minutes. One nonce per wallet at a time.
+
+**JWT secret:** Shared with the legacy login flow (`JWT_SECRET`). Tokens from both flows are accepted by `verifyUser` middleware.
+
+**Raw wallet address rejection:** `verifyUser` explicitly rejects `Authorization: Bearer 0x1234...` — anyone can type an address; it proves nothing without a signature.
+
+**React Native iframe session:**
+- Web app does SIWE login once.
+- JWT passed into game iframe via `window.postMessage`.
+- Game includes `Authorization: Bearer <token>` in every API call.
+- Zero wallet popups during gameplay.
 
 ---
 
@@ -262,14 +309,16 @@ POST /warzone/save/binary
 
 `GET /warzone/verify?wallet=0x...` runs all four checks:
 
-| Layer | What it checks | Source |
-|---|---|---|
-| 1. DB record | `PlayerSaveRecord` exists, rootHash + saveIndex consistent | MongoDB |
-| 2. DA proof | `daStatus === finalized`, BlobVerificationProof valid | 0G DA |
-| 3. File checksum | Re-download from 0G Storage, SHA-256 matches stored value | 0G Storage |
-| 4. Compute verdict | `computeStatus === validated`, verdict `CLEAN` | 0G Compute |
+| Layer | Guarantee type | What it checks | Source |
+|---|---|---|---|
+| 1. DB record | Soft (index) | `PlayerSaveRecord` exists, rootHash + saveIndex consistent | MongoDB |
+| 2. DA proof | **Cryptographic** | `daStatus === finalized`, BLS-signed by >2/3 of DA committee | 0G DA |
+| 3. File checksum | **Cryptographic** | Re-download from 0G Storage, SHA-256 + Merkle proof match | 0G Storage |
+| 4. Compute verdict | **Probabilistic** | AI heuristic: `computeStatus === validated`, verdict `CLEAN` | 0G Compute |
 
-A save passes all 4 layers only if it was genuinely uploaded, DA-finalized, not tampered with, and passed anti-cheat.
+Layers 2 and 3 are cryptographically verifiable by anyone — the DA BLS signature and Merkle proof are publicly auditable. Layer 4 (Compute) is probabilistic: a `CLEAN` verdict means the AI found no anomaly patterns, but is not a cryptographic proof of legitimate play. Layer 1 is an index convenience layer only.
+
+`allPassed: true` means the save is on-chain anchored, DA-finalized, file-intact, and AI-cleared. The strongest guarantees are layers 2 and 3.
 
 ---
 
@@ -281,7 +330,11 @@ A save passes all 4 layers only if it was genuinely uploaded, DA-finalized, not 
 ZG_RPC_URL=https://evmrpc.0g.ai
 ZG_CHAIN_ID=16661
 ZG_ANCHOR_CONTRACT_ADDRESS=0x...   # printed after: node scripts/deployAnchor.js
-ZG_PRIVATE_KEY=0x...               # becomes the immutable backendOperator in the contract
+
+# Key separation (recommended — each service uses its own wallet)
+ZG_STORAGE_PRIVATE_KEY=0x...       # signs 0G Storage upload transactions
+ZG_CHAIN_PRIVATE_KEY=0x...         # calls PlayerSaveAnchor.anchorSave() on 0G chain
+# ZG_PRIVATE_KEY=0x...             # fallback if using a single key (backward compat)
 
 # 0G Storage
 ZG_INDEXER_RPC=https://indexer-storage-turbo.0g.ai
@@ -298,8 +351,22 @@ ZG_COMPUTE_API_KEY=                # skip anti-cheat if not set
 ```env
 MONGO_URI=mongodb+srv://...
 MONGO_DB_NAME=warzone-0g
-JWT_SECRET=<long random string>
+JWT_SECRET=<long random string — min 32 chars>
 PORT=3300
+```
+
+### Optional — Redis (shared rate limiting)
+```env
+# Set REDIS_URL to enable Redis-backed rate limiting across multiple instances.
+# Without it, in-memory rate limiting is used (suitable for single-instance deployments).
+REDIS_URL=redis://localhost:6379
+```
+
+### Optional — Observability
+```env
+# Prometheus metrics exposed at GET /metrics — requires: npm install prom-client
+# Restrict /metrics to internal network in production (nginx allow 10.0.0.0/8)
+# Grafana + Prometheus configured in docker-compose.yml and prometheus.yml
 ```
 
 ### Optional — Tuning
@@ -314,8 +381,16 @@ MONGOOSE_DEBUG_LOGS=false
 NODE_ENV=production
 ```
 
-### Key separation note
-`ZG_PRIVATE_KEY` is used for both 0G Storage uploads (signing transactions) and 0G chain anchoring. One leaked key compromises both. For production, split into `ZG_STORAGE_KEY` / `ZG_CHAIN_KEY` in `ZeroGStorage.js` and `ZeroGChain.js`.
+### Key separation — why it matters
+`ZG_STORAGE_PRIVATE_KEY` and `ZG_CHAIN_PRIVATE_KEY` are separate wallets. If one key leaks, the attacker can compromise only one service layer:
+
+| Key | What it controls | Risk if leaked |
+|---|---|---|
+| `ZG_STORAGE_PRIVATE_KEY` | Signs upload txs to 0G Storage | Attacker can upload arbitrary files (but not overwrite other players' anchored saves) |
+| `ZG_CHAIN_PRIVATE_KEY` | Calls `anchorSave()` on 0G chain | Attacker can overwrite your backend's on-chain save pointers |
+
+Both keys need 0G token balance to pay transaction fees. Fund them separately.  
+`ZG_PRIVATE_KEY` is the backward-compatible single-key fallback for existing deployments.
 
 ---
 
@@ -333,6 +408,8 @@ Explorer: `https://chainscan.0g.ai`
 
 | Endpoint | Auth | Limit |
 |---|---|---|
+| `GET /auth/nonce` | Public | 10 req/min |
+| `POST /auth/login` | Public | 5 req/min |
 | `POST /save/binary` | JWT | 10 req/min |
 | `GET /load/binary` | JWT | 30 req/min |
 | `GET /save/metadata` | Public | 60 req/min |
@@ -344,7 +421,9 @@ Explorer: `https://chainscan.0g.ai`
 | `GET /proof/:rootHash` | Public | 30 req/min |
 | `GET /network/status` | Public | 20 req/min |
 
-Rate limiter is in-memory (`routes/middleware/rateLimiter.js`). For multi-instance deployments, replace with Redis-backed rate limiting.
+Rate limiter: `routes/middleware/rateLimiter.js`  
+- **Without `REDIS_URL`:** In-memory (per-process) — suitable for single-instance deployments and local dev.  
+- **With `REDIS_URL`:** Redis-backed (shared across all instances) — required for multi-instance / load-balanced deployments. Install: `npm install ioredis`
 
 ---
 

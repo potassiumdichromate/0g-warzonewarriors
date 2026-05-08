@@ -1,10 +1,29 @@
 /**
- * ZeroGCompute — verifiable AI validation via 0G Compute Router.
+ * ZeroGCompute — AI heuristic anti-cheat via 0G Compute Router.
  *
- * 0G Compute runs inference inside a TEE (Trusted Execution Environment).
- * The provider signs the response with an EIP-191 key that is attested on-chain.
- * This means: if the model says "CLEAN", that statement is cryptographically signed
- * and cannot be forged by us or anyone else.
+ * What this layer IS:
+ *   A probabilistic, heuristic first-pass filter. The AI model analyses coin
+ *   delta, save frequency, and stat patterns to flag obvious cheating. It raises
+ *   the cost and friction of cheating significantly, but is not a cryptographic
+ *   proof of legitimate play.
+ *
+ * TEE attestation — two-tier reality:
+ *   We send `verify_tee: true` on every request, but attestation is NOT guaranteed.
+ *   The 0G Compute router routes to whatever provider is available:
+ *
+ *   teeVerified: true  — inference ran inside a verified TEE; the provider signed
+ *                        the verdict with an EIP-191 key attested on-chain.
+ *                        The CLEAN/REJECTED verdict is cryptographically bound and
+ *                        cannot be forged. This is the UNCOMMON path today.
+ *
+ *   teeVerified: false — inference ran on 0G Compute, but the specific provider
+ *                        for this request did not return a verifiable TEE attestation.
+ *                        The verdict is still a valid AI judgment, but carries no
+ *                        cryptographic guarantee. This is the COMMON path today.
+ *
+ * Positioning: treat this as a strong deterrent + detection layer, not a
+ * cryptographic proof. Pair with the on-chain anchor (immutable) and DA proof
+ * (BLS-finalized) for the tamper-evident guarantees.
  *
  * Compute router: https://router-api.0g.ai/v1
  * Dashboard / API keys / deposit: https://pc.0g.ai
