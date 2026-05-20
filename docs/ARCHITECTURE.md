@@ -1,5 +1,11 @@
 # Architecture
 
+Warzone Warriors is an AI-native arcade shooter where player progression becomes verifiable, persistent, and portable through decentralized infrastructure.
+
+- Players truly own their progression.
+- Saves cannot be silently manipulated.
+- AI opponents evolve from real player behavior.
+
 ## The problem this solves
 
 Traditional game backends store everything in a central database. The developer controls the database. That means player saves can be modified, leaderboards can be manipulated, and if the company shuts down, all save data disappears.
@@ -24,7 +30,7 @@ MongoDB still exists, but it's the hot layer — fast reads for game requests. T
 │                                                                 │
 │  ┌─────────────┐  ┌────────────────┐  ┌──────────────────────┐ │
 │  │  Auth       │  │  Save / Load   │  │  Behavioral AI       │ │
-│  │  SIWE/JWT   │  │  WZSV binary   │  │  TF.js + 0G Compute  │ │
+│  │  SIWE/JWT   │  │  WZSV binary   │  │  Neural + 0G Compute  │ │
 │  └─────────────┘  └────────┬───────┘  └──────────────────────┘ │
 │                            │                                    │
 │  ┌─────────────────────────▼──────────────────────────────────┐ │
@@ -133,8 +139,8 @@ The AI system layers three inference sources:
 POST /ai/predict
         │
         ▼
-  [TF.js model cached?] ──YES──► TF.js inference (~1ms)
-        │ NO                      source: "tfjs"
+  [Local model cached?] ──YES──► Local neural inference (~1ms)
+        │ NO                      source: "local-neural"
         ▼
   [ZG_COMPUTE_API_KEY set?] ──YES──► 0G Compute LLM (~200ms, TEE-signed)
         │ NO                          source: "0g-compute"
@@ -143,9 +149,9 @@ POST /ai/predict
                                       source: "fallback"
 ```
 
-TF.js handles the fast per-frame path. The neural net is a simple 4-layer dense network (17→64→64→32→5) trained on behavioral cloning — it learns to mimic the player's inputs from their gameplay recordings.
+The local neural inference layer handles the fast per-frame path. The neural net is a simple 4-layer dense network (17→64→64→32→5) trained on behavioral cloning — it learns to mimic the player's inputs from their gameplay recordings.
 
-0G Compute handles the cold-start problem. New players have no recordings, so no TF.js model exists. The LLM plays the game "intelligently" (using the game rules as its system prompt) until enough samples accumulate for TF.js to take over. Once TF.js is ready, Compute is only invoked for the explicit `/ai/strategy` endpoint used in Arena matches.
+0G Compute handles the cold-start problem. New players have no recordings, so no local model exists. The LLM plays the game "intelligently" (using the game rules as its system prompt) until enough samples accumulate for the local inference layer to take over. Once the local model is ready, Compute is only invoked for the explicit `/ai/strategy` endpoint used in Arena matches.
 
 The data pipeline for training:
 

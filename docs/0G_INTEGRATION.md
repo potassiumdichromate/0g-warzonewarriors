@@ -11,7 +11,7 @@ This document covers how each component of the 0G network is used in WarzoneWarr
 **What we use it for**:
 - Storing player save binaries (WZSV format, ~4KB each)
 - Storing behavioral AI sample batches (JSON, ~100KB per batch)
-- Storing trained TF.js model weights (~2–5MB each)
+- Storing trained local neural inference model weights (~2–5MB each)
 
 **How it works in the code** (`src/services/ZeroGStorage.js`):
 
@@ -269,7 +269,7 @@ const trace = data.x_0g_trace;
 
 ### 2. Game AI fallback
 
-When a player has no trained TF.js model (they haven't uploaded 500 samples yet), the LLM acts as the AI opponent. The system prompt describes the game rules and decision priorities:
+When a player has no trained local inference model (they haven't uploaded 500 samples yet), the LLM acts as the AI opponent. The system prompt describes the game rules and decision priorities:
 
 ```
 You are an expert AI controller for WarzoneWarrior.
@@ -283,7 +283,7 @@ Respond with ONLY JSON: {"horizontal":...,"vertical":...,"jump":...,"shoot":...,
 
 The `reasoning` field in the response is surfaced to the frontend so players can see why the AI made each decision.
 
-**Important**: LLM inference takes 100–400ms. Don't call `/ai/predict` every frame. The TF.js layer handles per-frame calls in ~1ms. The compute layer is only hit when no TF.js model exists, or when explicitly calling `/ai/strategy` for Arena matches.
+**Important**: LLM inference takes 100–400ms. Don't call `/ai/predict` every frame. The local neural inference layer handles per-frame calls in ~1ms. The compute layer is only hit when no local model exists, or when explicitly calling `/ai/strategy` for Arena matches.
 
 ### 3. Training data enrichment
 
@@ -380,7 +380,7 @@ For a game with 1,000 active daily players each saving once per session, rough e
 
 **AI model returns fallback action**
 - Check `/behavior/status/:wallet` — model may still be training
-- If `status: "error"`, check `errorMsg` field — common cause is TF.js memory error during training
+- If `status: "error"`, check `errorMsg` field — common cause is local inference memory error during training
 - Try `POST /behavior/retrain/:wallet` to restart training
 
 **0G Storage upload failing**

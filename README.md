@@ -1,8 +1,12 @@
 # WarzoneWarrior — 0G Backend
 
-Backend server for WarzoneWarrior, a 2D mobile action shooter. This handles everything the Unity game needs to persist state, verify saves, and run AI opponents — all routed through 0G's decentralized infrastructure instead of a centralized cloud.
+Warzone Warriors is an AI-native arcade shooter where player progression becomes verifiable, persistent, and portable through decentralized infrastructure.
 
-The short version: players sign in with their Ethereum wallet, saves are stored on 0G's decentralized storage network, root hashes get anchored on-chain so saves can't be tampered with, and behavioral AI models are trained from gameplay recordings and stored the same way.
+- Players truly own their progression.
+- Saves cannot be silently manipulated.
+- AI opponents evolve from real player behavior.
+
+This backend handles everything the Unity game needs to persist state, verify saves, and run AI opponents — all routed through 0G's decentralized infrastructure instead of a centralized cloud. Players sign in with their Ethereum wallet, saves are stored on 0G's decentralized storage network, root hashes get anchored on-chain so saves can't be tampered with, and behavioral AI models are trained from gameplay recordings and stored the same way.
 
 ---
 
@@ -26,7 +30,7 @@ warzone-backend-0g/
 │   │   ├── ZeroGChain.js      — On-chain save anchoring (PlayerSaveAnchor contract)
 │   │   ├── ZeroGDA.js         — Data Availability via gRPC disperser
 │   │   ├── ZeroGCompute.js    — Anti-cheat + AI predictions via 0G Compute LLM
-│   │   └── BehaviorTrainer.js — TF.js behavioral cloning + 0G Compute fallback
+│   │   └── BehaviorTrainer.js — Local neural inference layer + 0G Compute fallback
 │   ├── blockchain/            — SessionTracker + LeaderboardTracker contracts
 │   └── utils/                 — retry.js, aiEncoder.js
 ├── contracts/
@@ -149,7 +153,7 @@ The load path (`GET /player/load/binary`) just reads from MongoDB and re-seriali
 
 The game records player inputs during gameplay (position, velocity, enemy positions, actions taken). These are uploaded in batches to `POST /behavior/upload`. Each batch is stored as a JSON blob on 0G Storage — not in MongoDB.
 
-Once 500 samples accumulate, TF.js training fires automatically:
+Once 500 samples accumulate, local neural inference training fires automatically:
 
 1. All sample batches are downloaded from 0G Storage
 2. If `AI_ENRICH=true`, 0G Compute generates additional synthetic expert samples
@@ -158,7 +162,7 @@ Once 500 samples accumulate, TF.js training fires automatically:
 5. The `AIRecord` in MongoDB is updated with the model's `rootHash`
 
 When Unity calls `POST /ai/predict`, the response comes from:
-- **TF.js** if a trained model exists (~1ms per call)
+- **Local neural inference** if a trained model exists (~1ms per call)
 - **0G Compute LLM** if no model has been trained yet (~200ms, TEE-verified)
 - **Neutral fallback** if both are unavailable (returns all zeros, never crashes)
 
@@ -222,6 +226,6 @@ All routes are rate-limited per IP:
 ## Notes
 
 - The 0G DA layer runs on **testnet** by default (`disperser-testnet.0g.ai:51001`). Mainnet DA will be available once finalized.
-- TF.js runs in pure JS mode (`@tensorflow/tfjs`) for easy deployment. If you need faster training, swap in `@tensorflow/tfjs-node` and install the native add-ons.
+- The local neural inference layer runs in pure JS mode (`@tensorflow/tfjs`) for easy deployment. If you need faster training, swap in `@tensorflow/tfjs-node` and install the native add-ons.
 - MongoDB stores no raw gameplay data or model weights. Only metadata (rootHashes, statuses, player profile state).
 - The `ZG_ENABLED=false` flag disables all 0G network calls for local development without any wallet configured.
