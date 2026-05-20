@@ -1,5 +1,7 @@
 const PlayerSaveRecord = require("../models/PlayerSaveRecord");
-const ZeroGChain = require("../services/ZeroGChain");
+const PlayerProfile    = require("../models/PlayerProfile");
+const AIRecord         = require("../models/AIRecord");
+const ZeroGChain       = require("../services/ZeroGChain");
 
 const EXPLORER = "https://chainscan.0g.ai";
 
@@ -612,5 +614,253 @@ exports.getWalletExplorer = async (req, res) => {
   } catch (err) {
     console.error("[0G UX] explorer error:", err);
     return res.status(500).json({ error: "Failed to load wallet explorer" });
+  }
+};
+
+// ── GET /0g/stats ─────────────────────────────────────────────────────────────
+// Global server stats — useful for a public dashboard or status page.
+
+exports.getGlobalStats = async (req, res) => {
+  try {
+    const [
+      totalPlayers,
+      totalSaves,
+      finalizedSaves,
+      anchoredSaves,
+      computeValidated,
+      pendingSaves,
+      failedSaves,
+      totalAIRecords,
+      readyModels
+    ] = await Promise.all([
+      PlayerProfile.countDocuments(),
+      PlayerSaveRecord.countDocuments(),
+      PlayerSaveRecord.countDocuments({ daStatus: "finalized" }),
+      PlayerSaveRecord.countDocuments({ anchorTxHash: { $exists: true, $ne: null } }),
+      PlayerSaveRecord.countDocuments({ computeStatus: "validated" }),
+      PlayerSaveRecord.countDocuments({ daStatus: "pending" }),
+      PlayerSaveRecord.countDocuments({ daStatus: "failed" }),
+      AIRecord.countDocuments(),
+      AIRecord.countDocuments({ status: "ready" })
+    ]);
+
+    const sizeAgg = await PlayerSaveRecord.aggregate([
+      { $group: { _id: null, totalBytes: { $sum: "$fileSize" }, totalSamples: { $sum: 1 } } }
+    ]);
+    const totalBytes = sizeAgg[0]?.totalBytes || 0;
+
+    const sampleAgg = await AIRecord.aggregate([
+      { $group: { _id: null, totalSamples: { $sum: "$totalSamples" }, totalBatches: { $sum: { $size: "$sampleBatches" } } } }
+    ]);
+
+    return res.json({
+      players: { total: totalPlayers },
+      saves: {
+        total:             totalSaves,
+        finalized:         finalizedSaves,
+        anchored:          anchoredSaves,
+        computeValidated,
+        pending:           pendingSaves,
+        failed:            failedSaves,
+        totalDataStored:   formatBytes(totalBytes),
+        totalDataStoredBytes: totalBytes
+      },
+      ai: {
+        totalModels:            totalAIRecords,
+        readyModels,
+        totalSamplesCollected:  sampleAgg[0]?.totalSamples  || 0,
+        totalSampleBatches:     sampleAgg[0]?.totalBatches  || 0
+      },
+      contracts: {
+        playerSaveAnchor: process.env.ZG_ANCHOR_CONTRACT_ADDRESS || null,
+        session:          process.env.SESSION_CONTRACT_ADDRESS    || null,
+        leaderboard:      process.env.LEADERBOARD_CONTRACT_ADDRESS || null
+      }
+    });
+  } catch (err) {
+    console.error("[0G UX] globalStats error:", err);
+    return res.status(500).json({ error: "Failed to fetch global stats" });
+  }
+};
+
+// ── GET /0g/player/overview/:wallet ──────────────────────────────────────────
+// One-call public player card — profile snippet + save stats + trust + AI status.
+// Designed for public profile pages on the frontend.
+
+exports.getPlayerOverview = async (req, res) => {
+  const wallet = req.params.wallet?.toLowerCase();
+  if (!wallet) return res.status(400).json({ error: "wallet param required" });
+
+  try {
+    const [profile, saves, aiRecord] = await Promise.all([
+      PlayerProfile.findOne({ walletAddress: wallet }).lean(),
+      PlayerSaveRecord.find({ walletAddress: wallet }).sort({ saveIndex: -1 }).limit(20).lean(),
+      AIRecord.findOne({ walletAddress: wallet }).lean()
+    ]);
+
+    const trust   = computeTrustScore(saves);
+    const latest  = saves[0] || null;
+
+    return res.json({
+      wallet,
+      displayName: `Warrior_${wallet.slice(2, 8)}`,
+      profile: profile ? {
+        level:           profile.PlayerProfile?.level    || 1,
+        exp:             profile.PlayerProfile?.exp      || 0,
+        totalTimePlayed: profile.PlayerProfile?.totalTimePlayed || 0
+      } : null,
+      resources: profile ? {
+        coin:    profile.PlayerResources?.coin    || 0,
+        gem:     profile.PlayerResources?.gem     || 0,
+        stamina: profile.PlayerResources?.stamina || 0,
+        medal:   profile.PlayerResources?.medal   || 0
+      } : null,
+      trust: {
+        badge:         trust.label,
+        score:         trust.score,
+        totalSaves:    trust.breakdown?.totalSaves    || 0,
+        finalizedSaves: trust.breakdown?.finalizedSaves || 0
+      },
+      ai: aiRecord ? {
+        status:        aiRecord.status,
+        totalSamples:  aiRecord.totalSamples,
+        modelRootHash: aiRecord.modelRootHash,
+        trainedAt:     aiRecord.trainedAt
+      } : { status: "none", totalSamples: 0 },
+      latestSave: latest ? {
+        saveIndex:  latest.saveIndex,
+        rootHash:   latest.rootHash,
+        daStatus:   latest.daStatus,
+        badge:      verificationBadge(latest),
+        createdAt:  latest.createdAt
+      } : null
+    });
+  } catch (err) {
+    console.error("[0G UX] playerOverview error:", err);
+    return res.status(500).json({ error: "Failed to load player overview" });
+  }
+};
+
+// ── GET /0g/saves/recent ──────────────────────────────────────────────────────
+// Latest saves across all players — public activity feed.
+// Wallet addresses are partially masked for privacy.
+
+exports.getRecentSaves = async (req, res) => {
+  const limit = Math.min(50, parseInt(req.query.limit) || 20);
+
+  try {
+    const saves = await PlayerSaveRecord.find({})
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .select("walletAddress saveIndex rootHash coinSnapshot fileSize daStatus computeStatus anchorTxHash createdAt")
+      .lean();
+
+    const feed = saves.map(s => {
+      const w = s.walletAddress || "";
+      return {
+        wallet:        w.slice(0, 6) + "..." + w.slice(-4),
+        saveIndex:     s.saveIndex,
+        rootHash:      s.rootHash,
+        coinSnapshot:  s.coinSnapshot,
+        fileSize:      formatBytes(s.fileSize),
+        badge:         verificationBadge(s),
+        daStatus:      s.daStatus,
+        computeStatus: s.computeStatus,
+        explorerUrl:   explorerTx(s.anchorTxHash),
+        savedAt:       s.createdAt
+      };
+    });
+
+    return res.json({ total: feed.length, saves: feed });
+  } catch (err) {
+    console.error("[0G UX] recentSaves error:", err);
+    return res.status(500).json({ error: "Failed to fetch recent saves" });
+  }
+};
+
+// ── GET /0g/compute/stats ─────────────────────────────────────────────────────
+// Anti-cheat and AI inference statistics from the 0G Compute layer.
+
+exports.getComputeStats = async (req, res) => {
+  try {
+    const [
+      totalValidations,
+      cleanValidations,
+      suspiciousValidations,
+      skippedValidations,
+      teeVerified,
+      aiReady
+    ] = await Promise.all([
+      PlayerSaveRecord.countDocuments({ computeStatus: "validated" }),
+      PlayerSaveRecord.countDocuments({ "computeValidation.verdict": "CLEAN" }),
+      PlayerSaveRecord.countDocuments({ "computeValidation.verdict": "SUSPICIOUS" }),
+      PlayerSaveRecord.countDocuments({ computeStatus: "skipped" }),
+      PlayerSaveRecord.countDocuments({ "computeValidation.teeVerified": true }),
+      AIRecord.countDocuments({ status: "ready" })
+    ]);
+
+    const totalWithResult = cleanValidations + suspiciousValidations;
+
+    return res.json({
+      anticheat: {
+        totalValidations,
+        clean:            cleanValidations,
+        suspicious:       suspiciousValidations,
+        skipped:          skippedValidations,
+        teeVerifiedCount: teeVerified,
+        teeVerifiedRate:  totalValidations > 0 ? Math.round((teeVerified / totalValidations) * 100) / 100 : 0,
+        cleanRate:        totalWithResult > 0  ? Math.round((cleanValidations / totalWithResult) * 100) / 100 : null
+      },
+      ai: {
+        readyModels:  aiReady,
+        model:        process.env.ZG_AI_MODEL        || "0GM-1.0-35B-A3B",
+        anticheatModel: process.env.ZG_ANTICHEAT_MODEL || "deepseek/deepseek-chat-v3-0324",
+        configured:   !!process.env.ZG_COMPUTE_API_KEY
+      }
+    });
+  } catch (err) {
+    console.error("[0G UX] computeStats error:", err);
+    return res.status(500).json({ error: "Failed to fetch compute stats" });
+  }
+};
+
+// ── GET /player/history (auth) ────────────────────────────────────────────────
+// Paginated save history with full pipeline detail for the authenticated wallet.
+
+exports.getSaveHistory = async (req, res) => {
+  const wallet = req.walletAddress;
+  const page   = Math.max(1, parseInt(req.query.page)  || 1);
+  const limit  = Math.min(50, parseInt(req.query.limit) || 20);
+
+  try {
+    const total = await PlayerSaveRecord.countDocuments({ walletAddress: wallet });
+    const saves = await PlayerSaveRecord.find({ walletAddress: wallet })
+      .sort({ saveIndex: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
+
+    const savesView = saves.map(s => ({
+      saveIndex:     s.saveIndex,
+      rootHash:      s.rootHash,
+      coinSnapshot:  s.coinSnapshot,
+      fileSize:      formatBytes(s.fileSize),
+      checksum:      s.checksum,
+      source:        s.source,
+      badge:         verificationBadge(s),
+      pipeline:      buildPipeline(s),
+      createdAt:     s.createdAt
+    }));
+
+    return res.json({
+      wallet,
+      page,
+      totalPages: Math.ceil(total / limit) || 1,
+      totalSaves: total,
+      saves: savesView
+    });
+  } catch (err) {
+    console.error("[0G UX] saveHistory error:", err);
+    return res.status(500).json({ error: "Failed to load save history" });
   }
 };
