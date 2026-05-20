@@ -13,6 +13,8 @@ const allowedOrigins = [
   "https://api.warzonewarriors.xyz",
   "http://localhost:3000",
   "http://localhost:5173",
+  "https://pub-2c48e58780b648b7a2a77316f7b0aa2c.r2.dev/0gai/WarzoneV2/index.html",
+  "https://pub-2c48e58780b648b7a2a77316f7b0aa2c.r2.dev",
   "https://0g-testfrontend.vercel.app"
 ];
 
