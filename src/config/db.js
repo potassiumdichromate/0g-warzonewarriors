@@ -1,8 +1,13 @@
 const mongoose = require("mongoose");
 
 module.exports = async () => {
-  await mongoose.connect(process.env.MONGO_URI, { autoIndex: true });
-  console.log("✅ MongoDB Connected");
+  try {
+    await mongoose.connect(process.env.MONGO_URI, { autoIndex: true });
+    console.log("✅ MongoDB Connected");
+  } catch (err) {
+    console.error("❌ MongoDB connection failed:", err.message);
+    process.exit(1);
+  }
 
   try {
     await mongoose.connection.collection("playersaverecords").dropIndex("rootHash_1");
