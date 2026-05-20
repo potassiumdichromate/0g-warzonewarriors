@@ -9,16 +9,19 @@ const { withRetry }           = require("../utils/retry");
 const ZG_RPC_URL  = process.env.OG_MAINNET_RPC       || "https://evmrpc.0g.ai";
 const ZG_CHAIN_ID = parseInt(process.env.OG_MAINNET_CHAIN_ID || "16661");
 
+// Deduplicated — removed dead storage-indexer-v2.0g.ai hostname
 const ZG_INDEXER_URLS = [
-  process.env.ZG_INDEXER_RPC,
-  "https://indexer-storage-turbo.0g.ai",
-  "https://indexer-storage-turbo-standard.0g.ai",
-  "https://storage-indexer-v2.0g.ai",
-].filter(Boolean);
+  ...new Set([
+    process.env.ZG_INDEXER_RPC,
+    "https://indexer-storage-turbo-v2.0g.ai",
+    "https://indexer-storage-turbo.0g.ai",
+    "https://indexer-storage-turbo-standard.0g.ai",
+  ].filter(Boolean))
+];
 
-let _indexer     = null;
-let _indexerUrl  = null;
-let _signer      = null;
+let _indexer    = null;
+let _indexerIdx = 0;
+let _signer     = null;
 
 function getSigner() {
   const key = process.env.ZG_PRIVATE_KEY;
@@ -37,22 +40,17 @@ function getSigner() {
 
 function getIndexer() {
   if (!_indexer) {
-    const url = _indexerUrl || ZG_INDEXER_URLS[0];
-    _indexer    = new Indexer(url);
-    _indexerUrl = url;
-    console.log(`[0G] Using indexer: ${url}`);
+    const url = ZG_INDEXER_URLS[_indexerIdx];
+    _indexer  = new Indexer(url);
+    console.log(`[0G] Using indexer [${_indexerIdx}]: ${url}`);
   }
   return _indexer;
 }
 
 function rotateIndexer() {
-  const current = _indexerUrl || ZG_INDEXER_URLS[0];
-  const idx     = ZG_INDEXER_URLS.indexOf(current);
-  const next    = ZG_INDEXER_URLS[idx + 1];
-  if (next) {
-    console.warn(`[0G] Indexer ${current} failed — trying ${next}`);
-    _indexerUrl = next;
-  }
+  const failed = ZG_INDEXER_URLS[_indexerIdx];
+  _indexerIdx  = (_indexerIdx + 1) % ZG_INDEXER_URLS.length;
+  console.warn(`[0G] Indexer ${failed} failed — rotating to ${ZG_INDEXER_URLS[_indexerIdx]}`);
   _indexer = null;
   _signer  = null;
 }

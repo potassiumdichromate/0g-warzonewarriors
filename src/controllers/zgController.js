@@ -216,12 +216,22 @@ exports.saveBinary = async (req, res) => {
     const coinSnapshot = profile.PlayerResources?.coin ?? 0;
     const coinDelta    = coinSnapshot - (latest?.coinSnapshot ?? 0);
 
-    // Upload to 0G Storage
+    // Upload to 0G Storage — non-fatal: DB save always succeeds
+    const checksum = crypto.createHash("sha256").update(buffer).digest("hex");
     let storageResult;
     if (ZG_ENABLED) {
-      storageResult = await ZeroGStorage.uploadBuffer(buffer);
+      try {
+        storageResult = await ZeroGStorage.uploadBuffer(buffer);
+      } catch (err) {
+        console.error("[0G] Storage upload failed (falling back to db-only):", err.message);
+        storageResult = {
+          rootHash: `db-${checksum.slice(0, 16)}`,
+          txHash:   `db-tx-${Date.now()}`,
+          size:     buffer.length,
+          checksum
+        };
+      }
     } else {
-      const checksum = crypto.createHash("sha256").update(buffer).digest("hex");
       storageResult = {
         rootHash: `dev-${checksum.slice(0, 16)}`,
         txHash:   `dev-tx-${Date.now()}`,
