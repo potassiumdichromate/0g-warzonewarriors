@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package disperser;
+
+service Disperser {
+  rpc DisperseBlob(DisperseBlobRequest) returns (DisperseBlobReply) {}
+  rpc GetBlobStatus(BlobStatusRequest) returns (BlobStatusReply) {}
+}
+
+message DisperseBlobRequest {
+  bytes data = 1;
+  repeated uint32 custom_quorum_numbers = 2;
+  AccountID account_id = 3;
+}
+
+message AccountID {
+  string account_id = 1;
+}
+
+message DisperseBlobReply {
+  BlobStatus result = 1;
+  bytes request_id = 2;
+}
+
+enum BlobStatus {
+  UNKNOWN = 0;
+  PROCESSING = 1;
+  ASSOCIATED = 2;
+  FINALIZED = 3;
+  FAILED = 4;
+  INSUFFICIENT_SIGNATURES = 5;
+  DISPERSING = 6;
+  CONFIRMED = 7;
+}
+
+message BlobStatusRequest {
+  bytes request_id = 1;
+}
+
+message BlobStatusReply {
+  BlobStatus status = 1;
+  BlobInfo info = 2;
+}
+
+message BlobInfo {
+  BlobHeader blob_header = 1;
+  BlobVerificationProof blob_verification_proof = 2;
+}
+
+message BlobHeader {
+  bytes commitment = 1;
+  uint32 data_length = 2;
+  repeated BlobQuorumParam blob_quorum_params = 3;
+}
+
+message BlobQuorumParam {
+  uint32 quorum_number = 1;
+  uint32 adversary_threshold_percentage = 2;
+  uint32 quorum_threshold_percentage = 3;
+  uint32 chunk_length = 4;
+}
+
+message BlobVerificationProof {
+  uint32 batch_id = 1;
+  uint32 blob_index = 2;
+  BatchMetadata batch_metadata = 3;
+  bytes inclusion_proof = 4;
+  bytes quorum_indices = 5;
+}
+
+message BatchMetadata {
+  BatchHeader batch_header = 1;
+  bytes signatory_record_hash = 2;
+  uint32 fee = 3;
+  uint32 confirmation_block_number = 4;
+  bytes batch_header_hash = 5;
+}
+
+message BatchHeader {
+  bytes batch_root = 1;
+  bytes quorum_numbers = 2;
+  bytes quorum_signed_percentages = 3;
+  uint32 reference_block_number = 4;
+}
