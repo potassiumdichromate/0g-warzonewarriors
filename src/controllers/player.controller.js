@@ -11,6 +11,8 @@ const PlayerProfile    = require("../models/PlayerProfile");
 const PlayerSaveRecord = require("../models/PlayerSaveRecord");
 const sessionService     = require("../blockchain/sessionService");
 const leaderboardService = require("../blockchain/leaderboardService");
+const { queueLamborghiniRewardCheck } = require("../services/highwayHustleRewardService");
+const { syncExternalCrossGameRewards } = require("../services/externalCrossGameRewardSync");
 
 exports.getProfile = async (req, res) => {
   try {
@@ -19,6 +21,9 @@ exports.getProfile = async (req, res) => {
     if (!profile) {
       profile = await PlayerProfile.create({ walletAddress: req.walletAddress });
     }
+
+    await syncExternalCrossGameRewards(profile.walletAddress || req.walletAddress);
+    profile = await PlayerProfile.findOne({ walletAddress: req.walletAddress }) || profile;
 
     return res.json(profile.toObject({ getters: true }));
   } catch (err) {
@@ -49,7 +54,12 @@ exports.patchProfile = async (req, res) => {
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
 
-    return res.json(profile.toObject({ getters: true }));
+    queueLamborghiniRewardCheck(profile, "player-profile-patch");
+    await syncExternalCrossGameRewards(profile.walletAddress || req.walletAddress);
+
+    const refreshedProfile = await PlayerProfile.findOne({ walletAddress: req.walletAddress }) || profile;
+
+    return res.json(refreshedProfile.toObject({ getters: true }));
   } catch (err) {
     console.error("patchProfile error:", err);
     return res.status(500).json({ error: "Failed to update profile" });

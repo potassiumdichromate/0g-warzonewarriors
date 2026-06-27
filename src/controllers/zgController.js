@@ -19,6 +19,8 @@ const ZeroGDA          = require("../services/ZeroGDA");
 const ZeroGChain       = require("../services/ZeroGChain");
 const ZeroGCompute     = require("../services/ZeroGCompute");
 const { withRetry }    = require("../utils/retry");
+const { queueLamborghiniRewardCheck } = require("../services/highwayHustleRewardService");
+const { queueExternalCrossGameRewards, syncExternalCrossGameRewards } = require("../services/externalCrossGameRewardSync");
 
 const ZG_ENABLED = process.env.ZG_ENABLED !== "false";
 
@@ -215,6 +217,8 @@ exports.saveBinary = async (req, res) => {
 
     const coinSnapshot = profile.PlayerResources?.coin ?? 0;
     const coinDelta    = coinSnapshot - (latest?.coinSnapshot ?? 0);
+    queueLamborghiniRewardCheck(profile, "binary-save");
+    queueExternalCrossGameRewards(walletAddress, "binary-save");
 
     // Upload to 0G Storage — non-fatal: DB save always succeeds
     const checksum = crypto.createHash("sha256").update(buffer).digest("hex");
@@ -288,11 +292,14 @@ exports.loadBinary = async (req, res) => {
   const walletAddress = req.walletAddress;
 
   try {
-    const profile = await PlayerProfile.findOne({ walletAddress });
+    let profile = await PlayerProfile.findOne({ walletAddress });
 
     if (!profile) {
       return res.status(404).json({ error: "No save found for this wallet" });
     }
+
+    await syncExternalCrossGameRewards(profile.walletAddress || walletAddress);
+    profile = await PlayerProfile.findOne({ walletAddress }) || profile;
 
     const record = await PlayerSaveRecord.findOne({ walletAddress })
       .sort({ saveIndex: -1 }).lean();

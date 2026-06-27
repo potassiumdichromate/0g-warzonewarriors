@@ -44,7 +44,9 @@ app.use(express.json({ limit: "1mb" }));
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.use("/auth",     require("./routes/authRoutes"));
 app.use("/0g",       require("./routes/zgUXRoutes"));
+app.use("/warzone",  require("./routes/crossGameRewardRoutes"));
 app.use("/player",   require("./routes/profileRoutes"));
+app.use("/player",   require("./routes/crossGameRewardRoutes"));
 app.use("/player",   require("./routes/player.routes"));
 app.use("/behavior", require("./routes/behaviorRoutes"));
 app.use("/ai",       require("./routes/aiRoutes"));
