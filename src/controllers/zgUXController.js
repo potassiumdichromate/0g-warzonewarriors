@@ -2,6 +2,7 @@ const PlayerSaveRecord = require("../models/PlayerSaveRecord");
 const PlayerProfile    = require("../models/PlayerProfile");
 const AIRecord         = require("../models/AIRecord");
 const ZeroGChain       = require("../services/ZeroGChain");
+const { queueLamborghiniRewardCheck } = require("../services/highwayHustleRewardService");
 
 const EXPLORER = "https://chainscan.0g.ai";
 
@@ -576,6 +577,10 @@ exports.getWalletExplorer = async (req, res) => {
       .lean();
 
     const trust = computeTrustScore(saves);
+    queueLamborghiniRewardCheck(
+      { walletAddress: wallet, coinSnapshot: saves[0]?.coinSnapshot || 0 },
+      "0g-wallet-explorer"
+    );
 
     let onChain = null;
     if (process.env.ZG_ANCHOR_CONTRACT_ADDRESS && process.env.ZG_ENABLED !== "false") {
@@ -700,6 +705,10 @@ exports.getPlayerOverview = async (req, res) => {
 
     const trust   = computeTrustScore(saves);
     const latest  = saves[0] || null;
+    queueLamborghiniRewardCheck(
+      { walletAddress: wallet, coinSnapshot: Math.max(profile?.PlayerResources?.coin || 0, latest?.coinSnapshot || 0) },
+      "0g-player-overview"
+    );
 
     return res.json({
       wallet,
