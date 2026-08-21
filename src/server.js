@@ -15,7 +15,9 @@ const allowedOrigins = [
   "http://localhost:5173",
   "https://pub-2c48e58780b648b7a2a77316f7b0aa2c.r2.dev/0gai/WarzoneV2/index.html",
   "https://pub-2c48e58780b648b7a2a77316f7b0aa2c.r2.dev",
-  "https://0g-testfrontend.vercel.app"
+  "https://0g-testfrontend.vercel.app",
+  "https://app.kult.games",
+  "https://www.app.kult.games"
 ];
 
 app.use(cors({
