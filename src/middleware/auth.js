@@ -11,6 +11,10 @@ function verifyToken(token) {
 function extractWallet(payload) {
   const candidates = [
     payload?.walletAddress,
+    // The Kult browser backend signs { wallet_address, typ: "kult_player" } and
+    // carries no sub/walletAddress claim, so browser JWTs miss every other name
+    // here and the request 401s with "Missing wallet in token payload".
+    payload?.wallet_address,
     payload?.address,
     payload?.wallet,
     payload?.sub
